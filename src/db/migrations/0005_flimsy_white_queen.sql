@@ -1,0 +1,1 @@
+CREATE INDEX "llm_calls_unresolved_created_idx" ON "llm_calls" USING btree ("created_at") WHERE "llm_calls"."status" not in ('succeeded', 'failed');

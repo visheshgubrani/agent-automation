@@ -1,0 +1,35 @@
+# Dev infrastructure. The app itself runs on the host via `pnpm dev`.
+# Up:   pnpm db:up    (docker compose -f docker-compose.dev.yml up -d --wait)
+# Down: pnpm db:down
+name: agent-automation
+
+services:
+  postgres:
+    # Official Postgres image with the pgvector extension preinstalled
+    image: pgvector/pgvector:pg17
+    container_name: agent-automation-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: app
+    ports:
+      # Host port 5434 because 5432/5433 are already taken on this machine.
+      # Bound to loopback only — reachable for the app, Drizzle Studio,
+      # and any local DB client, but not from the network.
+      - '127.0.0.1:5434:5432'
+    volumes:
+      # Named volume: data survives container recreation
+      - vol_obv:/var/lib/postgresql/data
+      # One-time init: creates the second `app_test` database + pgvector
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d app']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  vol_obv:
+    name: vol_obv
