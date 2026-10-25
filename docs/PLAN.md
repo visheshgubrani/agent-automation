@@ -18,7 +18,7 @@ carry an explicit per-kind at-most-once/at-least-once policy.
 | --- | --- | --- |
 | 01 Database foundation | Schema design + Drizzle implementation, enums, constraints, indexes, feedback view, audit/spend query, invariant tests | done — approved with review tweaks 2026-10-18 |
 | 02 Runtime skeleton | Env/config, structured logging, health routes, credential encryption, run/audit helpers, pg-boss worker, outbox dispatcher, Telegram bot, heartbeat | done — code/tests complete 2026-10-21; live Telegram heartbeat/callback exit checks verified 2026-10-23 |
-| 03 Mail ingestion + important alerts | OAuth connect/store encrypted credentials, Gmail sync, cleaning, rules, classification, budget, Telegram alerts/review, feedback | in progress — increments 1–7 implemented 2026-10-22/23; live Gmail sync, classification, alerts, noisy correction, restart, and evaluation verified; missed-important/rule live checks pending |
+| 03 Mail ingestion + important alerts | OAuth connect/store encrypted credentials, Gmail sync, cleaning, rules, classification, budget, Telegram alerts/review, feedback | done — closed 2026-10-23 at the user's request; increments 1–7 implemented and automated checks complete; two live checks deferred to ongoing use (D040) |
 | 04 (retired — merged into 03) | Original mail triage + notification scope | retired 2026-10-21; number retained for stable references, not an active phase |
 | 05 Telegram agent + approvals | Agent tool loop, conversation history, approval payload/execution, at-most-once send policy (bot/long-poll base in 02) | planned |
 | 06 News/market digest | Sources, items, story clustering, watchlist scoring, digest + breaking outbox, never-resend deliveries | planned |
@@ -34,12 +34,17 @@ arrive as additive migrations.
 
 ## Current phase
 
-Phase 03 (mail ingestion + important alerts) is in progress:
+Phase 03 (mail ingestion + important alerts) is done as of 2026-10-23:
 [docs/phases/03-important-email-alerts.md](phases/03-important-email-alerts.md). Increments 1–7 are
 implemented. Live verification confirmed Telegram heartbeat delivery, real Gmail backfill/incremental
-sync, OpenAI classification, five canonical alerts, a noisy-alert correction, graceful restart, and
-100% medium/high evaluation recall/precision on the synthetic held-out set. The remaining live
-checks are a missed-important correction and a future rule changing subsequent behavior.
+sync for two accounts, OpenAI classification, five canonical alerts, a noisy-alert correction,
+and graceful restart. Medium/high evaluation scored 100% recall/precision on 13 synthetic held-out
+cases; this is not a real-inbox accuracy estimate. The user explicitly deferred the missed-important
+correction and future-rule live checks to ongoing use; neither is recorded as passed (D040).
+Additional inbox connections and classification preference tuning remain routine setup/use.
+
+No implementation phase is currently active. Phase 05 (Telegram agent + approvals) is next;
+it remains planned and needs its own proposal and approval before implementation.
 
 Phase 02 (runtime skeleton) is done; its live Telegram heartbeat and inbound callback checks were
 verified on 2026-10-23: [docs/phases/02-runtime-skeleton.md](phases/02-runtime-skeleton.md). Phase

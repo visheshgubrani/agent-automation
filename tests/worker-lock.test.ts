@@ -1,9 +1,11 @@
+import { randomUUID } from 'node:crypto'
 import { afterAll, describe, expect, it } from 'vitest'
 import {
   acquireWorkerLock,
   isWorkerLockHeld,
   WORKER_LOCK_ID,
   WORKER_LOCK_NAMESPACE,
+  type WorkerLock,
 } from '../src/worker-lock.js'
 import { closeTestDb, pool } from './db/helpers.js'
 
@@ -45,5 +47,31 @@ describe('worker advisory lock', () => {
     expect(WORKER_LOCK_NAMESPACE).toBeGreaterThan(0)
     expect(WORKER_LOCK_NAMESPACE).toBeLessThan(2 ** 31)
     expect(WORKER_LOCK_ID).toBe(1)
+  })
+
+  it('ignores a matching lock held in another database', async () => {
+    const databaseName = `worker_lock_${randomUUID().replaceAll('-', '')}_test`
+    const otherDatabaseUrl = new URL(TEST_DATABASE_URL)
+    otherDatabaseUrl.pathname = `/${databaseName}`
+
+    await pool.query(`create database "${databaseName}"`)
+    let otherLock: WorkerLock | null = null
+    try {
+      otherLock = await acquireWorkerLock(otherDatabaseUrl.toString())
+      expect(otherLock).not.toBeNull()
+      expect(await isWorkerLockHeld(pool)).toBe(false)
+
+      const localLock = await acquireWorkerLock(TEST_DATABASE_URL)
+      if (!localLock) throw new Error('expected this database to acquire its own worker lock')
+      try {
+        expect(await isWorkerLockHeld(pool)).toBe(true)
+      } finally {
+        await localLock.release()
+      }
+      expect(await isWorkerLockHeld(pool)).toBe(false)
+    } finally {
+      await otherLock?.release()
+      await pool.query(`drop database "${databaseName}"`)
+    }
   })
 })

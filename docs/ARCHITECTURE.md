@@ -6,10 +6,11 @@ dispatcher with its Telegram sender, the pg-boss worker with the advisory lock a
 the long-polling Telegram bot, the split health routes, and the heartbeat smoke tool were verified,
 including a live Telegram heartbeat and inbound callback updates on 2026-10-23.
 
-Phase 03 (mail ingestion + important alerts, combining the old 03/04 scope) has **increments 1–7**
-implemented: persisted mail rules/company domains, classification topic/notification/summary/
-decision provenance, the per-account connection boundary, LLM budget reservation + unknown-outcome
-audit support, mail-enabled worker configuration, the local Gmail account connection/credential
+Phase 03 (mail ingestion + important alerts, combining the old 03/04 scope) is done as of
+2026-10-23, with **increments 1–7** implemented: persisted mail rules/company domains,
+classification topic/notification/summary/decision provenance, the per-account connection boundary,
+LLM budget reservation + unknown-outcome audit support, mail-enabled worker configuration,
+the local Gmail account connection/credential
 lifecycle, reliable scheduled ingestion (OAuth-backed sync, history cursors, recovery scans,
 MIME cleaning, idempotent storage, per-account failure backoff, and Gmail request pacing), mail
 classification (rule-first decisions, bounded feedback examples, structured `gpt-6-luna` Responses
@@ -20,8 +21,11 @@ disable, status, and mail health/heartbeat visibility), and a labeled offline ev
 Two Gmail accounts are connected and real seven-day backfill/incremental sync were verified. Live
 verification also confirmed Telegram heartbeat delivery, OpenAI classification, five canonical
 email alerts, a noisy-alert correction, and graceful restart without duplicate ingestion/alerts;
-medium/high evaluation scored 100% recall/precision on the synthetic held-out set. The remaining
-live checks are a missed-important correction and a future rule changing subsequent behavior.
+medium/high evaluation scored 100% recall/precision on 13 synthetic held-out cases, which does
+not establish real-inbox accuracy. At closeout, the user deferred live checks for a missed-important
+correction and a future rule changing subsequent behavior to ongoing use (D040); both remain
+unverified live. Additional inbox connections and preference tuning remain routine setup/use.
+Closeout verification also corrected worker readiness to check advisory locks in the current database.
 
 ## Responsibilities
 

@@ -46,15 +46,17 @@ async function releaseWorkerLock(client: Client): Promise<void> {
 }
 
 /**
- * Readiness probe for `/health/ready`: is the worker's advisory lock granted right now?
- * Matches the exact key pair (classid + objid). `objsubid` distinguishes key form (1 =
- * single-bigint, 2 = two-int), so it is deliberately not filtered here.
+ * Readiness probe for `/health/ready`: is this database's worker advisory lock granted?
+ * pg_locks includes other databases, so filter by database as well as the key pair.
+ * `objsubid` distinguishes key form (1 = single-bigint, 2 = two-int), so it is
+ * deliberately not filtered here.
  */
 export async function isWorkerLockHeld(pool: Pool): Promise<boolean> {
   const result = await pool.query<{ held: boolean }>(
     `select exists (
       select 1 from pg_locks
       where locktype = 'advisory' and granted and classid = $1 and objid = $2
+        and database = (select oid from pg_database where datname = current_database())
     ) as held`,
     [WORKER_LOCK_NAMESPACE, WORKER_LOCK_ID],
   )

@@ -757,3 +757,21 @@ Date: 2026-10-22 | Status: accepted | Phase: [03](phases/03-important-email-aler
   seconds. Sync remains per-account serialized; quota failures are still visible, bounded, and
   backed off. Operators can set `GMAIL_REQUEST_DELAY_MS=0` for tests or higher for stricter quotas.
 - Approval: approved 2026-10-22 for increment 7 verification.
+
+## D040: Close phase 03 with user-deferred live follow-ups
+
+Date: 2026-10-23 | Status: accepted | Phase: [03](phases/03-important-email-alerts.md)
+- Context: increments 1–7 and automated checks are complete. Live verification covered two Gmail
+  accounts, ingestion, classification, Telegram alerts, a noisy-alert correction, and restart.
+  A missed-important correction and a future rule affecting subsequent mail remain unverified live.
+- Choice and reason: the user explicitly requested phase 03 completion and said the remaining live
+  checks would be exercised over time. Close the phase and retain those checks as post-phase
+  follow-ups without marking them passed. Additional inbox connections and preference tuning
+  remain routine setup/use; the implemented mail behavior is unchanged.
+- Alternative: keep the phase open until both live checks are performed; declined by the user
+  in favor of exercising them during ongoing use.
+- Consequence: the closeout acceptance gates are adjusted, while implementation requirements and
+  automated coverage remain unchanged. The 13-case synthetic evaluation is not evidence of
+  real-inbox accuracy. Phase 05 remains planned and needs separate approval before implementation.
+- Approval: user request on 2026-10-23: "we will do that over time, for now lets wrap up this phase
+  and complete this the phase 3".

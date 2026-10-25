@@ -1,14 +1,17 @@
 # Phase 03: Important email alerts across all inboxes
 
-Status: in_progress — increments 1–7 implementation and automated checks are complete. Live
-verification on 2026-10-22/23 confirmed Telegram heartbeat delivery, real Gmail backfill/incremental
-sync, OpenAI classification, five canonical email alerts, a noisy-alert correction, graceful worker
+Status: done — closed at the user's request on 2026-10-23 (D040). Increments 1–7 implementation
+and automated checks are complete. Live verification on 2026-10-22/23 confirmed Telegram heartbeat
+delivery, real Gmail backfill/incremental sync, OpenAI classification, five canonical email alerts,
+a noisy-alert correction, graceful worker
 restart without duplicate ingestion or alerts, and 100% medium/high evaluation recall/precision on
-the synthetic held-out set. Remaining: a live missed-important correction and a future rule changing
-subsequent behavior (user-driven checks).
+the synthetic held-out set. The user deferred a live missed-important correction and a future rule
+changing subsequent behavior to ongoing use; these follow-ups are not recorded as passed.
 Approval: approved 2026-10-21 for increments 1–2, and 2026-10-22 for increments 3–7 at the user's
 request. This document was requested as a proposal on 2026-10-21; implementation authorization now
 covers all increments in this phase.
+Closeout: on 2026-10-23 the user requested completion of phase 03 and said the remaining live
+checks would be exercised over time. D040 records the acceptance adjustment and retained follow-ups.
 Roadmap: this phase combines the existing phase 03 (accounts + mail sync) and core phase 04
 (mail triage + notifications) into one outcome. As of 2026-10-21 the roadmap marks the combined
 phase 03 as active and retires the old phase 04 row; later phase numbers are unchanged so existing
@@ -116,9 +119,8 @@ Real integration verification requires:
 - The user's company-domain configuration and optional known bank senders.
 
 Credentials and private mail must never be copied into this document or other project docs.
-Phase 02's code and automated checks are complete according to its existing record; its real
-Telegram exit test is still recorded as pending credentials. Complete that check before
-claiming end-to-end integration is verified. Preserve its historical evidence.
+Phase 02's live Telegram heartbeat and inbound callback checks were verified on 2026-10-23;
+its dated evidence is preserved in the phase 02 record.
 
 ## TODOs
 
@@ -266,19 +268,24 @@ claiming end-to-end integration is verified. Preserve its historical evidence.
       latency; keep medium as the initial default rather than silently changing it.
 - [x] Run `pnpm test`, `pnpm lint`, `pnpm exec tsc --noEmit`, and `pnpm build`; use `app_test`
       for DB tests and never truncate or model pg-boss-owned tables.
-- [x] With real credentials, complete any outstanding phase 02 Telegram heartbeat/smoke
-      verification and connect all intended accounts. (Two accounts connected; live heartbeat
-      sent, Gmail profile/backfill/incremental sync verified.)
-- [ ] Verify Gmail → classification → outbox → Telegram, then a noisy-alert correction, a
-      missed-important correction, and a future rule changing subsequent behavior. (Gmail →
-      classification → outbox → Telegram and a noisy-alert correction are verified live; the
-      missed-important correction and future-rule behavior remain user-driven checks.)
+- [x] With real credentials, complete phase 02 Telegram heartbeat/smoke verification and
+      verify the two connected accounts. (Live heartbeat sent; Gmail profile/backfill/incremental
+      sync verified. Additional inbox connections remain routine setup at closeout; D040.)
+- [x] Verify Gmail → classification → outbox → Telegram and a noisy-alert correction live.
+- [x] Record the user's closeout acceptance and deferral of the missed-important correction
+      and future-rule live checks to ongoing use (2026-10-23, D040). These checks remain
+      unverified live and are listed below as post-phase follow-ups.
 - [x] Verify worker restart does not duplicate ingested mail or enqueue another canonical
       alert; document the existing at-least-once ambiguity where Telegram delivery may repeat.
 - [x] Review changes for unrelated edits, update affected records, and record actual commands,
       results, limitations, and integration evidence before marking the phase done.
 
 ## Acceptance
+
+Closeout adjustment (2026-10-23, D040): the user accepted phase completion with two connected
+accounts and deferred the two remaining live checks to ongoing use. This supersedes those live
+closeout gates only; the implemented behavior and automated coverage below remain required.
+Additional inbox connections and preference tuning remain routine setup/use.
 
 - All intended Google accounts connect independently; credentials remain encrypted, refresh
   works, and a broken/paused account does not stop the others.
@@ -303,14 +310,15 @@ claiming end-to-end integration is verified. Preserve its historical evidence.
 
 ## Choices needing input
 
-No remaining product choices are required for the proposal. Credentials, account addresses,
-company domains, and optional bank-sender configuration are setup inputs to supply later.
-Increments 1–7 are implemented; live verification remains blocked on OpenAI/Telegram credentials.
+No product choices block closeout. Gmail/OpenAI/Telegram credentials were supplied for the recorded
+live verification. Additional accounts, company-domain/bank-sender hints, and classification
+preferences can be configured during ongoing use.
 
 ## Evidence and outcome
 
-Status: in progress (increments 1–7 implemented; live heartbeat, Gmail sync, classification, alerts,
-noisy-alert correction, restart, and evaluation verified; missed-important/rule checks pending).
+Status: done 2026-10-23 (increments 1–7 implemented; live heartbeat, Gmail sync, classification,
+alerts, noisy-alert correction, restart, and evaluation verified; missed-important/rule live checks
+deferred by the user under D040).
 
 ### Increment 1 — contracts, schema, configuration, and audit reservations (2026-10-21)
 
@@ -684,18 +692,35 @@ Automated checks:
 - `pnpm lint`, `pnpm exec tsc --noEmit`, `pnpm build` → clean.
 - `pnpm db:generate` → no schema changes.
 
-Remaining (user-driven live checks):
-- Mark an ignored message important from `/mail ignored` (missed-important correction) and confirm
+### Closeout verification and readiness fix (2026-10-23)
+
+- A fresh `pnpm test` run reproduced four failures in health/worker-lock tests (349 passed).
+  Querying `pg_locks` from `app_test` showed a matching worker lock held in `app`.
+  The readiness helper matched the key across databases and incorrectly reported a test worker.
+- Restricted the readiness lookup to the current database; worker lock acquisition and release
+  are unchanged. Added a regression using a temporary second test database, removed afterward,
+  to prove that a matching lock elsewhere does not satisfy readiness here. No migration was needed.
+- Fresh verification after the fix: `pnpm test` → 48 files, 354 tests passed;
+  `pnpm lint`, `pnpm exec tsc --noEmit`, and `pnpm build` → clean. The test suite ran against
+  `app_test` with fake provider integrations; the live worker on `app` remained running.
+- Updated the roadmap, architecture, AGENTS phase link, and D040 to record completion and the
+  user-deferred checks. No further implementation phase was started.
+
+### Post-phase follow-ups (user-deferred 2026-10-23)
+
+- [ ] Mark an ignored message important from `/mail ignored` (missed-important correction) and confirm
   an alert is created without duplicating an already delivered alert.
-- Create/save a rule from an alert or `/mail rules add`, then confirm it changes subsequent
+- [ ] Create/save a rule from an alert or `/mail rules add`, then confirm it changes subsequent
   matching mail without a historical alert burst. `/mail rules` and `/mail status` can be used to
   inspect the result.
 - Optional: send `/ping` and exercise `/mail status`, `/mail search`, and `/mail rules` commands
   live; automated tests cover them.
 - If Gmail quota errors recur, raise `GMAIL_REQUEST_DELAY_MS` and let per-account backoff retry.
 
-The phase remains in progress rather than done because the missed-important and future-rule live
-acceptance checks are not yet recorded.
+Phase 03 is closed at the user's explicit request (D040). The two follow-up checks remain
+unverified live; automated tests cover both behaviors. The 13-case synthetic evaluation does not
+establish real-inbox accuracy. Additional inbox connections and preference tuning can continue
+during normal use. Phase 05 remains planned and has not been started.
 
 ## References
 

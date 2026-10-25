@@ -8,7 +8,8 @@ OpenAI, Postgres (pgvector) + Drizzle. V1 schema lives in `src/db/schema/`.
 - `pnpm db:up` / `pnpm db:down` — local Postgres (pgvector) on `127.0.0.1:5434`.
 - `pnpm db:generate` — generate a migration after changing schema files.
 - `pnpm db:migrate` — apply pending migrations to `DATABASE_URL` (`app`).
-- `pnpm test` — vitest against `app_test` (global setup migrates it).
+- `pnpm test` — vitest against `app_test` (global setup migrates it). The lock-isolation test
+  creates/drops a temporary `*_test` database; the test role needs `CREATEDB`.
 - `pnpm dev`, `pnpm build`, `pnpm lint`, `pnpm lint:fix`.
 - `pnpm exec tsc --noEmit` — typecheck (tsconfig only covers `src`).
 - `pnpm worker` / `pnpm dev:worker` / `pnpm start:worker` — run the worker process
@@ -64,6 +65,6 @@ OpenAI, Postgres (pgvector) + Drizzle. V1 schema lives in `src/db/schema/`.
 - [docs/GMAIL-SETUP.md](docs/GMAIL-SETUP.md) — Desktop OAuth, consent/test users, token expiry.
 - [docs/phases/02-runtime-skeleton.md](docs/phases/02-runtime-skeleton.md) — phase 02 done
   (live Telegram heartbeat/callback exit checks verified 2026-10-23).
-- [docs/phases/03-important-email-alerts.md](docs/phases/03-important-email-alerts.md) — in progress
+- [docs/phases/03-important-email-alerts.md](docs/phases/03-important-email-alerts.md) — done 2026-10-23
   (increments 1–7 implemented; live Gmail/classification/alerts/correction verified 2026-10-23;
-  missed-important/rule live checks pending).
+  missed-important/rule live checks deferred by the user to ongoing use).
