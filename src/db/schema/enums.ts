@@ -85,6 +85,8 @@ export const runKind = pgEnum('run_kind', [
   'agent_chat',
   'approval_execution',
   'system',
+  // Added in its own migration (D002): one browser task attempt (phase 05).
+  'browser_task',
 ])
 export const runTrigger = pgEnum('run_trigger', [
   'schedule',
@@ -103,7 +105,13 @@ export const llmCallStatus = pgEnum('llm_call_status', [
   // The process died or the provider outcome could not be determined; budget stays reserved.
   'unknown',
 ])
-export const toolCallStatus = pgEnum('tool_call_status', ['running', 'succeeded', 'failed'])
+export const toolCallStatus = pgEnum('tool_call_status', [
+  'running',
+  'succeeded',
+  'failed',
+  // A send whose outcome could not be determined (crash or ambiguous click); never retried.
+  'unknown',
+])
 
 export const telegramDirection = pgEnum('telegram_direction', ['inbound', 'outbound'])
 export const telegramUpdateKind = pgEnum('telegram_update_kind', [
@@ -119,3 +127,34 @@ export const toneSampleSource = pgEnum('tone_sample_source', [
   'approved_draft',
   'feedback',
 ])
+
+/** Browser task lifecycle (phase 05, D042). Active states are guarded by one partial index. */
+export const browserTaskStatus = pgEnum('browser_task_status', [
+  'queued',
+  'running',
+  'waiting_for_human',
+  'awaiting_approval',
+  'executing',
+  'succeeded',
+  'unverified',
+  'outcome_unknown',
+  'failed',
+  'cancelled',
+])
+export const browserTaskSource = pgEnum('browser_task_source', ['telegram', 'schedule', 'retry'])
+export const browserHandoffReason = pgEnum('browser_handoff_reason', [
+  'captcha',
+  'login',
+  'two_factor',
+  'verification',
+  'other',
+])
+export const browserHandoffStatus = pgEnum('browser_handoff_status', [
+  'waiting',
+  'resolved',
+  'cancelled',
+  'timed_out',
+  'interrupted',
+])
+/** `inbound_media` is reserved for the later Instagram phase; add it in its own migration. */
+export const artifactKind = pgEnum('artifact_kind', ['screenshot'])

@@ -1,4 +1,5 @@
 import { sql } from 'drizzle-orm'
+import { type AgentHealthView, agentHeartbeatLine, getAgentStatus } from '../agent/status.js'
 import { withRun } from '../audit/runs.js'
 import { type Db, db as defaultDb } from '../db/index.js'
 import { notificationOutbox } from '../db/schema/index.js'
@@ -22,6 +23,7 @@ export interface HeartbeatResult {
   inserted: boolean
   quarantined: number
   failed: number
+  agent: AgentHealthView
   mail: {
     pending: number
     failed: number
@@ -59,8 +61,14 @@ export async function handleHeartbeatJob(context: HeartbeatJobContext): Promise<
 
       const quarantined = counts?.quarantined ?? 0
       const failed = counts?.failed ?? 0
-      const mail = await getMailStatusSummary(db)
-      const body = heartbeatBody(new Date(), quarantined, failed, mailHeartbeatLine(mail))
+      const [mail, agent] = await Promise.all([getMailStatusSummary(db), getAgentStatus(db)])
+      const body = heartbeatBody(
+        new Date(),
+        quarantined,
+        failed,
+        mailHeartbeatLine(mail),
+        agentHeartbeatLine(agent),
+      )
 
       const { notification, inserted } = await enqueueNotification(db, {
         kind: 'system',
@@ -75,6 +83,7 @@ export async function handleHeartbeatJob(context: HeartbeatJobContext): Promise<
         inserted,
         quarantined,
         failed,
+        agent,
         mail: {
           pending: mail.backlog.pending,
           failed: mail.backlog.failed,
@@ -96,6 +105,7 @@ export function heartbeatBody(
   quarantined: number,
   failed: number,
   mailLine?: string | null,
+  agentLine?: string | null,
 ): string {
   const lines = [`heartbeat ${sentAt.toISOString()} — worker is alive`]
   if (quarantined > 0) {
@@ -107,5 +117,6 @@ export function heartbeatBody(
   if (mailLine) {
     lines.push(mailLine)
   }
+  if (agentLine) lines.push(agentLine)
   return lines.join('\n')
 }

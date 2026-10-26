@@ -6,7 +6,9 @@ import { type Logger, logger } from '../logger.js'
 import { parseInlineButtonsFromPayload } from '../telegram/buttons.js'
 import {
   TELEGRAM_BODY_LIMIT,
+  TELEGRAM_CAPTION_LIMIT,
   TelegramBodyTooLongError,
+  TelegramCaptionTooLongError,
   TelegramInvalidButtonsError,
   type TelegramSender,
 } from '../telegram/sender.js'
@@ -20,6 +22,8 @@ import {
   markRetry,
   markSent,
   type NotificationRow,
+  type OutboxPhoto,
+  parseOutboxPhoto,
   recoverStaleSending,
   retryDelaySeconds,
 } from './outbox.js'
@@ -41,6 +45,12 @@ export interface DispatchOptions {
   /** Defaults to the module DB singleton. */
   db?: Db
   sender: TelegramSender
+  /**
+   * Loads the screenshot referenced by an outbox payload `photo`. Returning undefined (or
+   * throwing) falls back to a text message before any Telegram call; the row still costs one
+   * API call at most.
+   */
+  loadPhoto?: (photo: OutboxPhoto) => Promise<Uint8Array | undefined>
   /** Shutdown flag: stops new claims; the in-flight send finishes and finalizes. */
   signal?: AbortSignal
   limit?: number
@@ -87,7 +97,7 @@ export async function dispatchPendingNotifications(
       break
     }
     counters.claimed += 1
-    await deliverOne(db, options.sender, row, counters, log)
+    await deliverOne(db, options.sender, row, counters, log, options.loadPhoto)
   }
 
   return counters
@@ -99,6 +109,7 @@ async function deliverOne(
   row: NotificationRow,
   counters: DispatchCounters,
   log: Logger,
+  loadPhoto: DispatchOptions['loadPhoto'],
 ): Promise<void> {
   let failure: { kind: SendFailureKind; reason: string; retryAfterSeconds?: number }
   if (row.body.length > TELEGRAM_BODY_LIMIT) {
@@ -112,10 +123,30 @@ async function deliverOne(
     try {
       // Invalid or oversized payload buttons are omitted; the alert body still goes out.
       const buttons = parseInlineButtonsFromPayload(row.payload)
-      const { messageId } = await sender.send(
-        row.body,
-        buttons === undefined ? undefined : { buttons },
-      )
+      const sendOptions = buttons === undefined ? undefined : { buttons }
+      const photo = parseOutboxPhoto(row.payload)
+      // Load the screenshot before any API call so a missing artifact can fall back to text.
+      let image: Uint8Array | undefined
+      if (photo && loadPhoto && row.body.length <= TELEGRAM_CAPTION_LIMIT) {
+        try {
+          image = await loadPhoto(photo)
+        } catch (error) {
+          log.warn(
+            { notificationId: row.id, err: errorMessage(error) },
+            'photo artifact load failed; sending text',
+          )
+        }
+        if (image === undefined) {
+          log.warn(
+            { notificationId: row.id, artifactId: photo.artifactId },
+            'photo artifact missing; sending text',
+          )
+        }
+      }
+      const { messageId } =
+        image !== undefined
+          ? await sender.sendPhoto(image, row.body, sendOptions)
+          : await sender.send(row.body, sendOptions)
       // A failed finalize leaves the row `sending`; policy-aware recovery handles it and
       // the DB error propagates so the enclosing run records the infrastructure failure.
       await markSent(db, row.id, { telegramMessageId: messageId })
@@ -174,7 +205,7 @@ function classifySendFailure(error: unknown): {
   reason: string
   retryAfterSeconds?: number
 } {
-  if (error instanceof TelegramBodyTooLongError) {
+  if (error instanceof TelegramBodyTooLongError || error instanceof TelegramCaptionTooLongError) {
     return { kind: 'permanent', reason: errorMessage(error) }
   }
   if (error instanceof TelegramInvalidButtonsError) {

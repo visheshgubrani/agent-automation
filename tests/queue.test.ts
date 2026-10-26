@@ -4,9 +4,11 @@ import {
   BOSS_SCHEMA,
   createBoss,
   DISPATCH_CRON,
+  DISPATCH_NUDGE_SINGLETON_KEY,
   ensureQueues,
   ensureSchedules,
   MAIL_SYNC_CRON,
+  nudgeDispatch,
   QUEUES,
   startBoss,
   stopBoss,
@@ -69,6 +71,46 @@ describe('pg-boss runtime', () => {
     expect(triage).not.toBeNull()
     expect(triage?.retryLimit).toBe(2)
     expect(triage?.expireInSeconds).toBe(1_800)
+  })
+
+  it('creates the agent queues with their create-only policy only when enabled', async () => {
+    // The pgboss schema survives between test runs; start from a worker without agent queues.
+    await boss.deleteQueue(QUEUES.agentIntake.name).catch(() => undefined)
+    await boss.deleteQueue(QUEUES.browserTask.name).catch(() => undefined)
+    await ensureQueues(boss, { agentEnabled: false })
+    expect(await boss.getQueue(QUEUES.agentIntake.name)).toBeNull()
+    expect(await boss.getQueue(QUEUES.browserTask.name)).toBeNull()
+
+    await ensureQueues(boss, { agentEnabled: true })
+    const intake = await boss.getQueue(QUEUES.agentIntake.name)
+    expect(intake).not.toBeNull()
+    expect(intake?.retryLimit).toBe(1)
+    expect(intake?.expireInSeconds).toBe(120)
+    expect(intake?.policy).toBe('standard')
+
+    const browserTask = await boss.getQueue(QUEUES.browserTask.name)
+    expect(browserTask).not.toBeNull()
+    expect(browserTask?.policy).toBe('singleton')
+    expect(browserTask?.retryLimit).toBe(0)
+    expect(browserTask?.expireInSeconds).toBe(7_200)
+
+    // The create-only policy of pre-existing queues stays at the pg-boss default.
+    const dispatch = await boss.getQueue(QUEUES.notificationDispatch.name)
+    expect(dispatch?.policy).toBe('standard')
+  })
+
+  it('collapses rapid dispatch nudges into one throttled job', async () => {
+    await boss.deleteQueuedJobs(QUEUES.notificationDispatch.name)
+
+    await nudgeDispatch(boss)
+    await nudgeDispatch(boss)
+
+    const jobs = await boss.findJobs(QUEUES.notificationDispatch.name, { queued: true })
+    const nudges = jobs.filter(
+      (job) => job.singletonKey === DISPATCH_NUDGE_SINGLETON_KEY && job.state === 'created',
+    )
+    expect(nudges).toHaveLength(1)
+    await boss.deleteQueuedJobs(QUEUES.notificationDispatch.name)
   })
 
   it('installs the mail coordinator schedule only when mail is enabled', async () => {

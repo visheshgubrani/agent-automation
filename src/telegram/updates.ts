@@ -10,6 +10,8 @@ import {
 } from '../db/schema/index.js'
 import { errorMessage } from '../errors.js'
 import { type Logger, logger } from '../logger.js'
+import { handleBrowserCallback, handleCommentCommand, handleFreeTextRequest } from './browser.js'
+import { handleBrowserOperationsCommand } from './browser-operations.js'
 import type { InlineButtonRows } from './buttons.js'
 import { handleMailCallback, handleMailCommand, type TelegramResponder } from './mail.js'
 
@@ -84,6 +86,15 @@ export interface HandleTelegramUpdateOptions {
   ): Promise<void>
   /** Acknowledge a callback query; text is a short toast (max 200 characters). */
   answerCallback?(text?: string): Promise<void>
+  /**
+   * Enqueue a background job (the agent-intake and browser-task queues). Absent when the
+   * browser agent is disabled; `/comment` then answers that it is unavailable.
+   */
+  enqueue?(queue: string, data: Record<string, unknown>): Promise<void>
+  /** Immediate notification dispatch nudge after a callback commits a card. */
+  nudgeDispatch?(): Promise<void>
+  /** HTTPS browser view URL used by result-card buttons. */
+  browserViewUrl?: string
   db?: Db
   log?: Logger
 }
@@ -174,35 +185,68 @@ export async function handleTelegramUpdate(
         }
         responder = mailResponder
 
-        // Store the inbound message; a replayed update finds its row already there.
+        // Store the inbound message; a replayed update finds its row already there. The row id
+        // is the intake idempotency anchor (`browser_tasks.request_message_id`).
+        let inboundMessageId: string | undefined
         if (meta.kind === 'message' && meta.messageId !== undefined) {
-          await db
+          const [inbound] = await db
             .insert(telegramMessages)
             .values({
               chatId: chat.id,
               direction: 'inbound',
               telegramMessageId: meta.messageId,
               text: meta.messageText ?? '',
+              replyToTelegramMessageId: update.message?.reply_to_message?.message_id ?? null,
               payload: update as unknown as Record<string, unknown>,
               runId: run.id,
             })
             .onConflictDoNothing({
               target: [telegramMessages.chatId, telegramMessages.telegramMessageId],
             })
+            .returning({ id: telegramMessages.id })
+          inboundMessageId = inbound?.id
+        }
+
+        const browserContext = {
+          db,
+          chatDbId: chat.id,
+          runId: run.id,
+          updateId: meta.updateId,
+          responder: mailResponder,
+          log,
+          ...(options.enqueue !== undefined ? { enqueue: options.enqueue } : {}),
+          ...(options.nudgeDispatch !== undefined ? { nudge: options.nudgeDispatch } : {}),
+          ...(options.browserViewUrl !== undefined ? { viewUrl: options.browserViewUrl } : {}),
         }
 
         if (meta.kind === 'callback_query') {
-          await handleMailCallback(meta.callbackData ?? '', meta.messageId, {
-            db,
-            chatDbId: chat.id,
-            runId: run.id,
-            responder: mailResponder,
-            log,
-          })
+          const data = meta.callbackData ?? ''
+          if (data.startsWith('bt:') || data.startsWith('bs:')) {
+            await handleBrowserCallback(data, meta.messageId, browserContext)
+          } else {
+            await handleMailCallback(data, meta.messageId, {
+              db,
+              chatDbId: chat.id,
+              runId: run.id,
+              responder: mailResponder,
+              log,
+            })
+          }
         } else {
-          // Deterministic commands only; other updates are audited without a reply.
+          // Commands remain deterministic; ordinary text is parsed in the background intake job.
           const command = commandOf(meta)
-          if (command === 'mail') {
+          if (command === 'comment') {
+            if (inboundMessageId === undefined) {
+              await mailResponder.reply('Could not record this message; please send it again.')
+            } else {
+              await handleCommentCommand(meta.messageText ?? '', {
+                ...browserContext,
+                inboundMessageId,
+              })
+            }
+          } else if (command === 'tasks' || command === 'stop' || command === 'schedules') {
+            await handleBrowserOperationsCommand(command, browserContext)
+          } else if (command === 'mail') {
             await handleMailCommand(meta.messageText ?? '', {
               db,
               chatDbId: chat.id,
@@ -215,6 +259,13 @@ export async function handleTelegramUpdate(
               command === 'ping' ? PING_REPLY : command === 'start' ? START_REPLY : undefined
             if (replyText !== undefined) {
               await mailResponder.reply(replyText)
+            } else if (
+              meta.kind === 'message' &&
+              !command &&
+              meta.messageText?.trim() &&
+              inboundMessageId
+            ) {
+              await handleFreeTextRequest({ ...browserContext, inboundMessageId })
             }
           }
         }

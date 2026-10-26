@@ -1,4 +1,5 @@
-import { desc, eq } from 'drizzle-orm'
+import { and, desc, eq, sql } from 'drizzle-orm'
+import { type AgentHealthView, emptyAgentHealth, getAgentStatus } from './agent/status.js'
 import { checkDb, type Db, db, pool } from './db/index.js'
 import { runs } from './db/schema/index.js'
 import { env } from './env.js'
@@ -37,6 +38,7 @@ export interface HealthDetails {
   }
   outbox: { due: number; sending: number; quarantined: number; failed: number }
   mail: MailHealthView
+  agent: AgentHealthView
   telegramConfigured: boolean
   uptimeSeconds: number
   timestamp: string
@@ -49,7 +51,12 @@ async function latestRunStartedAt(
   const [row] = await db
     .select({ startedAt: runs.startedAt })
     .from(runs)
-    .where(eq(runs.kind, kind))
+    .where(
+      and(
+        eq(runs.kind, kind),
+        kind === 'system' ? sql`${runs.input}->>'job' = 'heartbeat'` : undefined,
+      ),
+    )
     .orderBy(desc(runs.startedAt))
     .limit(1)
   return row?.startedAt.toISOString() ?? null
@@ -93,18 +100,20 @@ export async function healthDetails(probe: HealthProbe = checkDb): Promise<Healt
       },
       outbox: { due: 0, sending: 0, quarantined: 0, failed: 0 },
       mail: emptyMailHealth(),
+      agent: emptyAgentHealth(),
       telegramConfigured: env.TELEGRAM_BOT_TOKEN !== undefined,
       uptimeSeconds: Math.floor(process.uptime()),
       timestamp: new Date().toISOString(),
     }
   }
 
-  const [locked, lastDispatchAt, lastHeartbeatAt, lastMailSyncAt, mail] = await Promise.all([
+  const [locked, lastDispatchAt, lastHeartbeatAt, lastMailSyncAt, mail, agent] = await Promise.all([
     isWorkerLockHeld(pool).catch(() => false),
     latestRunStartedAt(db, 'notification_dispatch'),
     latestRunStartedAt(db, 'system'),
     latestRunStartedAt(db, 'mail_sync'),
     getMailStatusSummary(db),
+    getAgentStatus(db),
   ])
 
   return {
@@ -112,6 +121,7 @@ export async function healthDetails(probe: HealthProbe = checkDb): Promise<Healt
     worker: { locked, lastDispatchAt, lastHeartbeatAt, lastMailSyncAt },
     outbox: mail.outbox,
     mail: mailHealthView(mail),
+    agent,
     telegramConfigured: env.TELEGRAM_BOT_TOKEN !== undefined,
     uptimeSeconds: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),

@@ -1,6 +1,9 @@
 import {
   accounts,
   approvals,
+  artifacts,
+  browserHandoffs,
+  browserTasks,
   classificationFeedback,
   emailClassifications,
   mailboxSyncState,
@@ -9,6 +12,7 @@ import {
   notificationOutbox,
   runs,
   telegramChats,
+  telegramMessages,
   userSettings,
 } from '../../src/db/schema/index.js'
 import { db } from './helpers.js'
@@ -205,6 +209,88 @@ export async function createTelegramChat(
     await db
       .insert(telegramChats)
       .values({ telegramChatId: 100_000 + next(), ...overrides })
+      .returning(),
+  )
+}
+
+export async function createTelegramMessage(
+  overrides: Partial<typeof telegramMessages.$inferInsert> = {},
+): Promise<typeof telegramMessages.$inferSelect> {
+  const chatId = overrides.chatId ?? (await createTelegramChat()).id
+  return firstRow(
+    await db
+      .insert(telegramMessages)
+      .values({
+        direction: 'inbound',
+        telegramMessageId: next(),
+        chatId,
+        payload: { message: { date: Math.floor(Date.now() / 1000) } },
+        ...overrides,
+      })
+      .returning(),
+  )
+}
+
+export async function createBrowserTask(
+  overrides: Partial<typeof browserTasks.$inferInsert> = {},
+): Promise<typeof browserTasks.$inferSelect> {
+  return firstRow(
+    await db
+      .insert(browserTasks)
+      .values({
+        source: 'telegram',
+        site: 'reddit',
+        action: 'reddit_comment',
+        targetUrl: 'https://www.reddit.com/r/test/comments/abc/thread/',
+        spec: {
+          version: 1,
+          targetUrl: 'https://www.reddit.com/r/test/comments/abc/thread/',
+          fields: [{ key: 'comment_text', value: 'hello', provenance: 'user_verbatim' }],
+        },
+        ...overrides,
+      })
+      .returning(),
+  )
+}
+
+export function fakeSha256(): string {
+  return next().toString(16).padStart(64, '0')
+}
+
+export async function createArtifact(
+  overrides: Partial<typeof artifacts.$inferInsert> = {},
+): Promise<typeof artifacts.$inferSelect> {
+  const sha256 = overrides.sha256 ?? fakeSha256()
+  return firstRow(
+    await db
+      .insert(artifacts)
+      .values({
+        kind: 'screenshot',
+        sha256,
+        mime: 'image/png',
+        byteSize: 1_024,
+        storagePath: `${sha256.slice(0, 2)}/${sha256}.png`,
+        ...overrides,
+      })
+      .returning(),
+  )
+}
+
+export async function createBrowserHandoff(
+  taskId: string,
+  runId: string,
+  overrides: Partial<typeof browserHandoffs.$inferInsert> = {},
+): Promise<typeof browserHandoffs.$inferSelect> {
+  return firstRow(
+    await db
+      .insert(browserHandoffs)
+      .values({
+        taskId,
+        runId,
+        reason: 'captcha',
+        expiresAt: new Date(Date.now() + 15 * 60_000),
+        ...overrides,
+      })
       .returning(),
   )
 }

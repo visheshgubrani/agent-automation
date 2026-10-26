@@ -1,4 +1,4 @@
-import { and, gte, lt, sql } from 'drizzle-orm'
+import { and, eq, gte, lt, sql } from 'drizzle-orm'
 import type { Db } from '../index.js'
 import { llmCalls } from '../schema/index.js'
 
@@ -37,16 +37,26 @@ export interface LlmBudgetUsage {
   unknown: number
 }
 
+export interface LlmBudgetUsageOptions {
+  /**
+   * Count only calls whose `purpose` starts with this prefix (for example `agent_` for the
+   * agent sub-limit, D044). Matched literally with `starts_with`, so `_` is not a wildcard.
+   */
+  purposePrefix?: string
+}
+
 /**
  * Daily budget usage for a half-open range [from, to). In-flight and unknown attempts count
  * their reserved worst-case cost (or actual cost if larger), so a crashed request cannot
  * silently free budget. Callers must pause while `totalUsd + nextReservation` exceeds the
- * configured daily limit.
+ * configured daily limit. The range uses the `llm_calls(created_at)` index; the optional
+ * purpose prefix filters within it.
  */
 export async function getLlmBudgetUsageForRange(
   db: Db,
   from: Date,
   to: Date,
+  options: LlmBudgetUsageOptions = {},
 ): Promise<LlmBudgetUsage> {
   const [row] = await db
     .select({
@@ -67,7 +77,15 @@ export async function getLlmBudgetUsageForRange(
       unknown: sql<number>`(count(*) filter (where ${llmCalls.status} = 'unknown'))::int`,
     })
     .from(llmCalls)
-    .where(and(gte(llmCalls.createdAt, from), lt(llmCalls.createdAt, to)))
+    .where(
+      and(
+        gte(llmCalls.createdAt, from),
+        lt(llmCalls.createdAt, to),
+        options.purposePrefix !== undefined
+          ? sql`starts_with(${llmCalls.purpose}, ${options.purposePrefix})`
+          : undefined,
+      ),
+    )
 
   return {
     actualUsd: Number(row?.actualUsd ?? 0),
@@ -77,4 +95,23 @@ export async function getLlmBudgetUsageForRange(
     inFlight: row?.inFlight ?? 0,
     unknown: row?.unknown ?? 0,
   }
+}
+
+/**
+ * Model-call cost counted against one run (the per-task cap, D044), with the same conservative
+ * accounting as the daily budget: in-flight/unknown rows count their reservation. Uses the
+ * `llm_calls(run_id)` index.
+ */
+export async function getLlmBudgetUsageForRun(db: Db, runId: string): Promise<number> {
+  const [row] = await db
+    .select({
+      totalUsd: sql<string>`coalesce(sum(
+        case when ${llmCalls.status} in ('in_flight', 'unknown')
+          then greatest(${llmCalls.reservedCostUsd}, ${llmCalls.costUsd})
+          else ${llmCalls.costUsd} end
+      ), 0)::text`,
+    })
+    .from(llmCalls)
+    .where(eq(llmCalls.runId, runId))
+  return Number(row?.totalUsd ?? 0)
 }

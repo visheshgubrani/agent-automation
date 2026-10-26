@@ -1,6 +1,7 @@
 export * from './accounts.js'
 export * from './approvals.js'
 export * from './audit.js'
+export * from './browser.js'
 export * from './enums.js'
 export * from './mail.js'
 export * from './notifications.js'

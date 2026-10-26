@@ -27,6 +27,25 @@ correction and a future rule changing subsequent behavior to ongoing use (D040);
 unverified live. Additional inbox connections and preference tuning remain routine setup/use.
 Closeout verification also corrected worker readiness to check advisory locks in the current database.
 
+Phase 05 (Telegram agent, approvals, and browser actions) is in progress: increment 0 recorded the
+design and decisions D041–D047 (later extended by D048–D052), and increment 1 (2026-10-25) added the browser task/handoff/
+artifact schema, agent/browser configuration (inert unless `AGENT_ENABLED=true`), shared
+`src/llm/` pricing/serial/budget helpers, the browser container, and `pnpm browser:check`.
+Increment 2 added the library layer: the budgeted AI SDK middleware, the Playwright driver,
+snapshot generations, guards, detectors, the Reddit site registry, and the audited `BrowserToolbox`
+with AI SDK tool definitions. Increment 3 (2026-10-25) wires the Reddit comment path end to end:
+`/comment` intake, the `agent-intake` and `browser-task` queues, the task run and daily cap, the
+prepared-form approval with photo cards, the model-free executor, result cards, and startup/drain
+recovery (D042–D048). Live checks for increment 3 wait on the Reddit login and `AGENT_MODEL`;
+increment 4 adds durable human handoffs and detector rechecks (D047, D049), with its live
+phone-login check pending. Increment 5 adds structured current-message intake, replay Start
+confirmation, inert schedule drafts, and Reddit text posts with multi-field approvals (D050).
+Its live post check is pending. Increment 6 adds migration 0010 and the local profile CLI,
+profile-backed note composition, and YC Work at a Startup/Wellfound adapters (D051); real-site
+application checks remain pending. Increment 7 adds confirmed schedules, transactional slot enqueue,
+operation commands, agent health/budget visibility and screenshot retention (D052). Credential setup
+and real-site checks are deferred to the next session; phase 05 remains in progress.
+
 ## Responsibilities
 
 | Component | Responsibility |
@@ -35,10 +54,10 @@ Closeout verification also corrected worker readiness to check advisory locks in
 | Drizzle (`src/db`) | Schema, migrations, typed DB access, spend/budget queries, credential storage helpers |
 | pg-boss (`src/queue.ts`) | Durable job scheduling/retries in the `pgboss` schema; orchestration only, not business state |
 | Hono (`src/app.ts` via `src/index.ts`) | Health split (public liveness, public readiness, token-protected details), request logs; admin/webhook/callback routes are later phases |
-| Workers | Mail sync coordinator/jobs (increment 3) and the bounded mail-triage job (increment 4), which also produces canonical alerts (increment 5), are implemented; digest, outreach, and approval execution land later |
-| Telegram bot (implemented) | `src/telegram/bot.ts` long polling in the worker, locked to one chat with update dedupe. `/start`, `/ping`, `/mail ignored|search|rules|status`, callback queries, and paginated review/rule previews are implemented; the conversational agent loop is later |
+| Workers | Mail sync coordinator/jobs (increment 3) and the bounded mail-triage job (increment 4), which also produces canonical alerts (increment 5), are implemented. Phase 05 increment 3 adds the `agent-intake` and `browser-task` (singleton, no retries) workers, registered only under `AGENT_ENABLED=true`; `browser-schedule-tick` (minutely) and `artifact-retention` (daily) are also registered/scheduled only when the agent is enabled (increment 7). Digest and outreach land later |
+| Telegram bot (implemented) | `src/telegram/bot.ts` long polling in the worker, locked to one chat with update dedupe. `/start`, `/ping`, `/mail ignored|search|rules|status`, `/comment <url>`, callback queries, paginated review/rule previews, and the `bt:` approval/stop/retry/Done/Start callbacks and free-text/reply intake are implemented; conversation history remains deferred |
 | Mail review and rules (implemented) | `src/mail/review.ts` (ignored/search pages from stored mail), `src/mail/corrections.ts` (feedback upsert, canonical correction application, alert cancellation/reactivation), `src/mail/rules-admin.ts` (preview/save/list/disable), and `src/telegram/mail.ts` (deterministic commands, callback validation, rendering) |
-| OpenAI client (implemented for mail) | `src/mail/openai-classifier.ts` calls the Responses API with structured output, `reasoning.effort`, no tools, no storage, and SDK retries disabled. Drafting, digest scoring/summaries, and the agent loop remain later phases |
+| OpenAI client (implemented for mail) | `src/mail/openai-classifier.ts` calls the Responses API with structured output, `reasoning.effort`, no tools, no storage, and SDK retries disabled. Agent parsing/preparation use the budgeted AI SDK client in `src/llm/`; digest scoring/summaries arrive later |
 | Credential crypto (implemented) | `src/crypto/credentials.ts`: AES-256-GCM envelope for OAuth tokens; key ring by `key_version`; AAD binds account/kind/version. `src/gmail/connect.ts`, `src/gmail/auth.ts`, and `src/db/queries/accounts.ts` own the connect/refresh lifecycle |
 | Gmail connector (implemented) | `src/gmail/oauth.ts` (Desktop OAuth, PKCE S256, one-use state, 127.0.0.1 loopback callback, 5-minute bound) and `src/gmail/connect.ts` (profile/scope verification before atomic account/credential/boundary persistence). `src/gmail/auth.ts` reuses or refreshes access tokens, preserves omitted refresh tokens, and marks revoked/error accounts |
 | Local mail controls (implemented) | `src/tools/gmail-connect.ts`, `src/tools/mail-accounts.ts`, and `src/tools/mail-config.ts`: connect, list/pause/resume, company domains, and bank senders. No command prints token material |
@@ -46,10 +65,12 @@ Closeout verification also corrected worker readiness to check advisory locks in
 | Mail classification (implemented) | `src/mail/triage-state.ts` (fair live-first claims, rule-aware scans, retry backoff, explicit requeue), `src/mail/rules.ts`, `src/mail/examples.ts`, `src/mail/classifier-prompt.ts`, `src/mail/openai-classifier.ts`, `src/mail/pricing.ts`, `src/mail/budget.ts`, `src/mail/classification.ts`, `src/mail/triage.ts`, and `src/jobs/mail-triage.ts`: rule-first decisions, bounded correction examples, validated structured output, serialized reserved model calls, local-day budget pause/notice, and visible failures |
 | Mail alerts (implemented) | `src/mail/alerts.ts`: canonical `email_triage` production inside the decision transaction, silent-boundary enforcement, RFC dedupe/correction precedence, bounded plain-text rendering with identifier/OTP redaction, Gmail link, validated inline-button payloads, and cancelled/undelivered alert reactivation. `src/notifications/dispatcher.ts` forwards payload buttons to `src/telegram/sender.ts` |
 | Mail status and health (implemented) | `src/mail/status.ts`: one snapshot of account sync health, backlog/failures, local-day spend/reservation, and outbox counts for `/mail status`, token-protected `/health/details`, and the daily heartbeat. Public health responses remain minimal |
+| Browser host (implemented, phase 05 increment 1) | `docker-compose.browser.yml` + `docker/browser/`: headful Chromium (linuxserver Selkies base) in Docker with a dedicated profile volume, CDP on host `127.0.0.1:9222` only, and a basic-auth web view on `127.0.0.1:3010` exposed by Tailscale Serve (`BROWSER_VIEW_URL`) for phone takeover. `pnpm browser:check` verifies it; the worker will connect per task over CDP and never close the browser (D041) |
+| Browser agent and tools (Reddit comments and text posts wired in increments 3–5) | `src/llm/` budgeted AI SDK v7 model middleware (D044); `src/browser/` `BrowserDriver`, `playwright-core` driver, bounded aria snapshots, guards, detectors, site registry, and artifacts; `src/agent/` task/approval/handoff transitions, guarded browser tools, the `ToolLoopAgent`, the model-free executor, deterministic `/comment` and structured free-text intake, replay confirmation, schedule Save confirmation, daily caps, card rendering, and startup recovery; `src/jobs/{agent-intake,browser-task}.ts` run them (D042, D043, D046–D050). Increment 6 adds `src/agent/{profile,notes}.ts`, `src/tools/agent-profile.ts` and YC/Wellfound registries: exact profile facts, one budgeted compose call, pinned job identity, already-applied read-only reports, and deterministic application verification (D051). Increment 7 adds `src/agent/{schedules,status}.ts`, `src/telegram/browser-operations.ts` and `src/jobs/{browser-schedules,artifact-retention}.ts` for confirmed cron, task/schedule lists and controls, secret-free health/spend, and retention (D052) |
 | Config (implemented) | `src/env.ts` base validation plus `src/config.ts` worker/mail/connect validation. Mail credentials are required only when `MAIL_ENABLED=true`; Gmail connect needs Gmail OAuth + encryption only; the heartbeat-only worker path stays available |
 | Audit helpers (implemented) | `src/audit/runs.ts` (`withRun`) and `src/audit/calls.ts` (`withLlmCall`/`withToolCall`). `withLlmCall` reserves worst-case cost as an `in_flight` row before the request, records known-failure usage (`LlmCallFailedError`), and recovers stale reservations as `unknown`; the classifier is its first runtime consumer |
-| Outbox dispatcher (implemented) | `src/notifications/outbox.ts` (enqueue/claim/expire/recover/mark helpers; enqueue accepts a caller transaction) + `src/notifications/dispatcher.ts` (run-gated tick: expire, policy-aware recovery, claim → send → finalize). `src/telegram/sender.ts` delivers plain text and validated inline buttons to the one configured chat |
-| Worker (implemented) | `src/worker.ts` + `src/queue.ts` + `src/worker-lock.ts`: pg-boss in the `pgboss` schema, heartbeat/dispatch jobs and schedules, single-worker session advisory lock, policy-aware startup recovery (outbox, stale model-call reservations, and abandoned triage claims), drain-on-shutdown, and the long-polling bot. When `MAIL_ENABLED=true` it also runs the mail coordinator, per-account sync, and mail-triage workers/schedule; the heartbeat-only path omits them. `src/tools/smoke-heartbeat.ts` (`pnpm smoke:heartbeat`) sends a manual heartbeat through this path and polls the outbox |
+| Outbox dispatcher (implemented) | `src/notifications/outbox.ts` (enqueue/claim/expire/recover/mark helpers; enqueue accepts a caller transaction; payload photo/v1 parsing) + `src/notifications/dispatcher.ts` (run-gated tick: expire, policy-aware recovery, claim → send → finalize). `src/telegram/sender.ts` delivers plain text, validated inline buttons (callback or https URL), and PNG screenshots with captions to the one configured chat; a missing or mismatched artifact falls back to text before any API call |
+| Worker (implemented) | `src/worker.ts` + `src/queue.ts` + `src/worker-lock.ts`: pg-boss in the `pgboss` schema, heartbeat/dispatch jobs and schedules, single-worker session advisory lock, policy-aware startup recovery (outbox, stale model-call reservations, abandoned triage claims, and interrupted browser tasks), drain-on-shutdown, and the long-polling bot. When `MAIL_ENABLED=true` it also runs the mail coordinator, per-account sync, and mail-triage workers/schedule; when `AGENT_ENABLED=true` it runs `agent-intake` and `browser-task`, creates those queues, wires `/comment` and `bt:` callbacks, and loads screenshots for cards. The heartbeat-only path omits both. `src/tools/smoke-heartbeat.ts` (`pnpm smoke:heartbeat`) sends a manual heartbeat through this path and polls the outbox |
 
 ## Data flows
 
@@ -147,22 +168,82 @@ Closeout verification also corrected worker readiness to check advisory locks in
     snapshot: account sync health, backlog/failure counts, local-day spend/reservation, and outbox
     counts. Public `/health` and `/health/ready` stay minimal.
 
-### On-demand agent and approvals
-1. A Telegram update is claimed once by inserting `telegram_updates.update_id`.
-2. The inbound message is stored in `telegram_messages` and starts a run
-   (`trigger = 'telegram'`, `kind = 'agent_chat'`).
-3. The model calls read/notify/draft tools; each executed tool call is recorded in
-   `tool_calls` under the run. Read tools are auto-run.
-4. A risky call creates an `approvals` row with the exact payload, expiry, and tier, plus
-   an `approval_request` outbox row. The model is told the action awaits approval.
-5. On approval, an execution run is created (`parent_run_id` = requesting run,
-   `trigger = 'approval'`). The executor reads arguments **only** from
-   `approvals.payload`, claims the approval by inserting a `running` `tool_calls` row
-   with `approval_id` (unique), performs the side effect, then finalizes the row.
-6. Any failed send needs a fresh approval whose payload is copied from the failed
-   approval; `retry_of_approval_id` records the lineage. There is no silent retry under
-   the old approval.
-7. Agent replies are stored in `telegram_messages` as outbound turns.
+### On-demand agent and approvals (phase 05 — increments 3–8 implemented for Reddit, job notes and schedules)
+Implemented path from [phase 05](phases/05-telegram-agent-browser-actions.md) (D041–D052), used by
+`/comment <url> [thoughts]` and clear free-text/reply requests for Reddit comments/posts and YC/Wellfound
+application notes. Conversation history remains deferred.
+1. A Telegram update is claimed once by inserting `telegram_updates.update_id` (D023). The handler
+   stores the inbound message in `telegram_messages` and enqueues an `agent-intake` job; it does
+   not run the model inline.
+2. Intake parses `/comment <url>` deterministically or free text through one budgeted structured
+   `agent_intake` call that sees only the current message. It validates supported action/target,
+   complete fields, exact substrings for `user_verbatim`, and approval-card size. Agent-written
+   fields are `drafted`. The versioned decision is cached under the inbound row lock, so retries
+   reuse pinned text. New `/comment` commands pin a pending `composeComment` request with optional
+   same-line/multiline thoughts; existing prepared/verbatim requests keep their semantics (D055).
+   Replies to delivered comment-advice questions take a separate deterministic path using only
+   the current answer and the stored question/task relationship. Explicit slash commands retain
+   command precedence. No quoted message bodies or general chat history are used.
+   Schedules require a delivered, unexpired Save card; unclear requests receive a question.
+   A clear action creates a `queued` task (unique `request_message_id`), enqueues `browser-task`,
+   and sends a Queued card. Messages older than 10 minutes or missing their Telegram date instead
+   get `status_reason = confirmation_required` and an expiring `browserTaskDraft` card. A validated
+   Start enqueues under the task lock and clears the gate; consumers lock before checking it.
+   Stop cancels the draft. No browser preparation happens before Start (D046, D050).
+3. The `browser-task` job (pg-boss `singleton`, so later tasks wait in the queue) opens a
+   `browser_task` run, claims the single active-task slot (partial unique index), checks the
+   per-site daily cap, connects over loopback CDP, and runs the `ToolLoopAgent` with
+   `prepareStep` trimming older snapshots and withholding approval until every field is filled.
+   Every model attempt reserves budget through the budgeted model middleware against the global and
+   agent daily limits plus the per-task cap (D044). The cap also counts the pinned intake run
+   referenced by the request message (D050). Each model request has its own deadline,
+   independent of human/approval waits (D049). Every tool call is recorded with `withToolCall`
+   under the run. Page content is bounded, delimited untrusted data. For a pending application
+   note, the first unblocked observation of the pinned job selects complete profile facts in one
+   `agent_compose_text` call and persists a drafted note before filling. Already-applied jobs end
+   with a read-only result; no compose call or approval is created (D051).
+   Pending Reddit comments read only the primary post matching the target ID, with separate
+   1000-character title/12000-character body bounds. A tool-free `agent_compose_text` call uses
+   that untrusted content and user thoughts to produce a casual draft (at most 800 characters),
+   persisted as `drafted` before fill. Alternatively it asks one question: task and outbox change
+   atomically to `queued/advice_required`, and the browser disconnects. Claims/requeueing skip
+   this gate. A valid same-chat reply consumes the question once and transactionally queues
+   another preparation run, rereads the post, and counts the earlier run in the task budget.
+   Stale answers receive their own fresh Start card; pending questions survive restart and have
+   no automatic expiry. A second question ends with an explanation instead (D055).
+4. Tools enforce guards before approval: origin allowlist, no commit-like clicks except registry
+   pre-commit openers, typing only spec field values (or bounded search queries), no
+   Ctrl/Meta+Enter, no JavaScript eval or file-system tools (D042).
+5. Detectors or `request_human` create a `browser_handoffs` row and move the task to
+   `waiting_for_human`, atomically with an at-least-once `system` outbox card containing the
+   screenshot, reason, page URL, phone view URL, and Open browser/Done/Stop buttons. Done must
+   match the linked delivered card and an unexpired waiting handoff. The job re-snapshots and
+   reruns detectors; a still-blocked page creates a new handoff, up to three per task. Tools
+   serialize across the wait. Stop cancels both rows; timeout fails with `handoff_timeout`,
+   exhaustion with `handoff_limit`, shutdown with `interrupted`. Captchas and challenges are
+   never solved or evaded (D047, D049).
+6. `request_submit_approval` reads back every field, checks exact equality with the spec and the
+   submit element's commit pattern, screenshots, and in one transaction creates the `approvals`
+   row (`browser.submit`, `send`, payload v1, expiry), the `approval_request` outbox row with the
+   photo and Approve/Cancel buttons, and `awaiting_approval`; it nudges dispatch and holds the page
+   (D045). Reddit comments additionally require the pinned post ID and a top-level composer
+   owning that post, including through shadow roots; nested reply editors are refused (D055).
+   Approve/Deny arrive as validated `bt:` callbacks resolving the approval conditionally;
+   expiry is a conditional system update. Post approvals include the subreddit and all exact
+   title/body values; fields must be distinct and the composer must match the requested community.
+   An approval card exceeding the Telegram limit is refused rather than clipped.
+7. Execution runs in an `approval_execution` child run (`parent_run_id` = task run,
+   `trigger = 'approval'`) inside the same job, so the prepared page is still held. It reads
+   arguments **only** from `approvals.payload`, claims it once via a `send` tool call with the
+   unique `approval_id`, re-checks URL, fields, submit element, and detectors, clicks once, and
+   verifies deterministically. No model call runs after approval. Outcomes are `succeeded`,
+   `unverified`, `outcome_unknown`, or `failed(precondition_failed)`; a result card follows with
+   Retry/Open-browser buttons where useful.
+8. Any failure after approval ends that approval. A retry is a new task and approval linked by
+   `retry_of_task_id`/`retry_of_approval_id`; there is no silent retry. Startup recovery marks
+   interrupted tasks failed or `outcome_unknown`, expires pending approvals, interrupts waiting
+   handoffs, and sends one recovery notice with Retry. Drain does the same for the in-flight job
+   (a started click is never aborted).
 
 ### Heartbeat and dispatch
 1. The heartbeat cron (daily by default, `HEARTBEAT_CRON`, UTC) enqueues a heartbeat job. The
@@ -267,3 +348,36 @@ and the credential helpers remain foundation-only until their consumers land.
   prompts; email/examples are delimited untrusted data. Confidence is diagnostic, not a
   notification threshold.
 - See [DATABASE.md](DATABASE.md) for schemas and [DECISIONS.md](DECISIONS.md) for rationale.
+
+
+### Browser schedules and operations (phase 05 increment 7, implemented)
+
+Schedule Save/Cancel locks its inbound source message and persists one resolution. A unique source
+message prevents duplicate activation. The cron parser previews three dates in Asia/Kolkata and
+requires one minute value per hour (minimum one-hour interval). The minutely tick locks due
+schedules, skips stale backlog, and atomically commits the latest timely slot’s task, pg-boss
+job (`fromDrizzle`), notification and next cursor. A queued scheduled task repeats the 30-minute
+late check before connecting. Per-slot uniqueness and task claims keep tick/queue replay harmless.
+Disable stops future slots; queued work stays explicit through /tasks and Stop.
+
+Task/schedule lists store bounded ids, offsets and expiry on outbound Telegram messages. Stop,
+Disable and pagination validate that stored card before acting. /stop cancels the active preparation
+or wait, while an executing approved submit finishes. Startup re-enqueues ungated queued tasks.
+Agent status exposes only counts, actual/reserved spend and a two-second loopback probe. Detailed
+health stays token-protected, and the latest heartbeat query excludes other system jobs.
+
+Daily screenshot retention (03:00 Kolkata) deletes expired files before tombstoning rows. Storage
+and retention share a per-hash transaction lock; re-storing refreshes created_at and clears a
+tombstone. Missing files tombstone; other failures stay retryable. Shutdown stops further deletions.
+
+
+Live correction D053 adds bounded iframe presentation/state observations to BrowserPage.
+BrowserToolbox and the deterministic executor use the same metadata: hidden/background widgets
+alone do not stop the task, while visible or uninspectable challenges still stop. CSS checks
+include embedding ancestors; only the known reCAPTCHA anchor checkbox can signal completion.
+No CAPTCHA interaction, frame body, password or response-token read is added.
+
+Live correction D054: aria snapshots are bounded in DOM order, so a composer below a long page is
+never in the bound and scrolling cannot reveal it. A cut snapshot therefore says so and lists the
+action's field inputs, commit control and openers found past the cut (bounded, untrusted,
+generation-qualified refs from `isTaskControl`).

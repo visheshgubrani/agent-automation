@@ -15,6 +15,15 @@ export const DEFAULT_MAIL_REQUEST_TIMEOUT_MS = 90_000
 /** Delay between Gmail API calls; avoids per-minute query/units quota bursts during backfill. */
 export const DEFAULT_GMAIL_REQUEST_DELAY_MS = 350
 
+export const DEFAULT_AGENT_REASONING_EFFORT = 'medium'
+export const DEFAULT_AGENT_MAX_STEPS = 25
+export const DEFAULT_AGENT_MAX_OUTPUT_TOKENS = 4_000
+export const DEFAULT_AGENT_STEP_TIMEOUT_MS = 90_000
+/** Loopback only: the browser container publishes CDP on host 127.0.0.1:9222 (D041). */
+export const DEFAULT_BROWSER_CDP_URL = 'http://127.0.0.1:9222'
+export const DEFAULT_BROWSER_HANDOFF_TIMEOUT_MINUTES = 15
+export const DEFAULT_BROWSER_APPROVAL_TIMEOUT_MINUTES = 30
+
 // Real env vars are NOT overridden by the file, so CI / vitest / production env always win.
 function loadDotEnvFile(): void {
   try {
@@ -93,6 +102,36 @@ const envSchema = z.object({
   MAIL_MAX_OUTPUT_TOKENS: integerWithDefault(1, 16_000, DEFAULT_MAIL_MAX_OUTPUT_TOKENS),
   MAIL_REQUEST_TIMEOUT_MS: integerWithDefault(1_000, 300_000, DEFAULT_MAIL_REQUEST_TIMEOUT_MS),
   GMAIL_REQUEST_DELAY_MS: integerWithDefault(0, 5_000, DEFAULT_GMAIL_REQUEST_DELAY_MS),
+
+  // Browser agent (phase 05). Optional here; requireWorkerConfig() enforces the rest when
+  // AGENT_ENABLED=true. AGENT_MODEL and AGENT_TASK_MAX_USD have no defaults: they are chosen
+  // from measured reliability and cost, and the model must have a pricing snapshot.
+  AGENT_ENABLED: envBoolean('false'),
+  AGENT_MODEL: optionalString(z.string().trim().min(1)),
+  AGENT_REASONING_EFFORT: z.preprocess(
+    (v) => (v === '' || v == null ? undefined : v),
+    z.enum(['medium', 'high']).default(DEFAULT_AGENT_REASONING_EFFORT),
+  ),
+  AGENT_MAX_STEPS: integerWithDefault(1, 100, DEFAULT_AGENT_MAX_STEPS),
+  AGENT_MAX_OUTPUT_TOKENS: integerWithDefault(1, 16_000, DEFAULT_AGENT_MAX_OUTPUT_TOKENS),
+  AGENT_STEP_TIMEOUT_MS: integerWithDefault(1_000, 300_000, DEFAULT_AGENT_STEP_TIMEOUT_MS),
+  AGENT_TASK_MAX_USD: optionalInteger(z.coerce.number().positive().max(10)),
+  BROWSER_CDP_URL: z.preprocess(
+    (v) => (v === '' || v == null ? undefined : v),
+    z.string().trim().min(1).default(DEFAULT_BROWSER_CDP_URL),
+  ),
+  BROWSER_VIEW_URL: optionalString(z.string().trim().min(1)),
+  ARTIFACT_DIR: optionalString(z.string().trim().min(1)),
+  BROWSER_HANDOFF_TIMEOUT_MINUTES: integerWithDefault(
+    1,
+    120,
+    DEFAULT_BROWSER_HANDOFF_TIMEOUT_MINUTES,
+  ),
+  BROWSER_APPROVAL_TIMEOUT_MINUTES: integerWithDefault(
+    1,
+    1_440,
+    DEFAULT_BROWSER_APPROVAL_TIMEOUT_MINUTES,
+  ),
 })
 
 export type Env = z.infer<typeof envSchema>

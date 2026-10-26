@@ -14,6 +14,8 @@ import {
 import { toneSampleSource, watchlistKind } from './enums.js'
 import { timestamps } from './types.js'
 
+export const APPLICANT_PROFILE_MAX_CHARS = 8_000
+
 /** Single-user settings. One row, id = 1; the app upserts it. */
 export const userSettings = pgTable(
   'user_settings',
@@ -31,6 +33,11 @@ export const userSettings = pgTable(
     dailySpendLimitUsd: numeric('daily_spend_limit_usd', { precision: 10, scale: 2 }).default(
       '1.00',
     ),
+    // Agent sub-limit inside the global limit (D044); null means only the global limit applies.
+    agentDailyLimitUsd: numeric('agent_daily_limit_usd', { precision: 10, scale: 2 }).default(
+      '0.50',
+    ),
+    applicantProfile: text('applicant_profile'),
     ...timestamps(),
   },
   (t) => [
@@ -47,6 +54,14 @@ export const userSettings = pgTable(
     check(
       'user_settings_spend_limit_check',
       sql`${t.dailySpendLimitUsd} is null or ${t.dailySpendLimitUsd} >= 0`,
+    ),
+    check(
+      'user_settings_agent_limit_check',
+      sql`${t.agentDailyLimitUsd} is null or ${t.agentDailyLimitUsd} >= 0`,
+    ),
+    check(
+      'user_settings_applicant_profile_check',
+      sql`${t.applicantProfile} is null or (char_length(${t.applicantProfile}) between 1 and ${sql.raw(String(APPLICANT_PROFILE_MAX_CHARS))} and char_length(btrim(${t.applicantProfile})) > 0)`,
     ),
   ],
 )

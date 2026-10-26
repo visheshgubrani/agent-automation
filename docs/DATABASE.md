@@ -16,7 +16,7 @@ to variable payloads listed below.
 - Later enum values are added in a migration that does not reference the new value; Drizzle's
   migrator wraps pending migrations in one transaction.
 
-## Enums (28)
+## Enums (33)
 
 | Enum | Values |
 | --- | --- |
@@ -39,17 +39,25 @@ to variable payloads listed below.
 | `risk_tier` | `read`, `notify`, `draft`, `send` |
 | `approval_status` | `pending`, `approved`, `denied`, `expired`, `cancelled` |
 | `approval_resolver` | `telegram`, `api`, `system` |
-| `run_kind` | `mail_sync`, `mail_triage`, `notification_dispatch`, `agent_chat`, `approval_execution`, `system` |
+| `run_kind` | `mail_sync`, `mail_triage`, `notification_dispatch`, `agent_chat`, `approval_execution`, `system`, `browser_task` |
 | `run_trigger` | `schedule`, `webhook`, `manual`, `telegram`, `retry`, `approval` |
 | `run_status` | `running`, `succeeded`, `failed`, `cancelled` |
 | `llm_call_status` | `succeeded`, `failed`, `in_flight`, `unknown` |
-| `tool_call_status` | `running`, `succeeded`, `failed` |
+| `tool_call_status` | `running`, `succeeded`, `failed`, `unknown` |
 | `telegram_direction` | `inbound`, `outbound` |
 | `telegram_update_kind` | `message`, `edited_message`, `callback_query`, `other` |
 | `watchlist_kind` | `ticker`, `company`, `topic`, `person` |
 | `tone_sample_source` | `manual`, `approved_draft`, `feedback` |
+| `browser_task_status` | `queued`, `running`, `waiting_for_human`, `awaiting_approval`, `executing`, `succeeded`, `unverified`, `outcome_unknown`, `failed`, `cancelled` |
+| `browser_task_source` | `telegram`, `schedule`, `retry` |
+| `browser_handoff_reason` | `captcha`, `login`, `two_factor`, `verification`, `other` |
+| `browser_handoff_status` | `waiting`, `resolved`, `cancelled`, `timed_out`, `interrupted` |
+| `artifact_kind` | `screenshot` (`inbound_media` reserved for the later Instagram phase) |
 
-## Tables (21)
+`run_kind.browser_task` and `tool_call_status.unknown` were added in migration `0008` on their
+own (D002 staging); no CHECK or index predicate references them.
+
+## Tables (24)
 
 ### accounts
 
@@ -434,8 +442,8 @@ Checks: all token/cost/latency fields non-negative, including `reserved_cost_usd
 carry available usage/request id via `LlmCallFailedError`; an ambiguous outcome carries them via
 `LlmCallOutcomeUnknownError`. If the process dies, the row stays `in_flight`;
 `recoverStaleInFlightLlmCalls` marks stale rows `unknown`. The reservation stays counted for
-in-flight/unknown outcomes. The classifier uses `gpt-6-luna` rates snapshotted in
-`src/mail/pricing.ts`; cost is computed from uncached input, cached input, cache writes, and
+in-flight/unknown outcomes. Model rates are snapshotted in `src/llm/pricing.ts` (re-exported by
+`src/mail/pricing.ts`); the classifier uses `gpt-6-luna`, and `AGENT_MODEL` must also be listed; cost is computed from uncached input, cached input, cache writes, and
 output, without adding the reasoning subset twice.
 
 Queries:
@@ -443,6 +451,14 @@ Queries:
 - `getLlmBudgetUsageForRange` is the admission query: terminal rows count actual cost;
   in-flight/unknown rows count `greatest(reserved_cost_usd, cost_usd)` and are reported separately.
   Callers pause when the next reservation would exceed `user_settings.daily_spend_limit_usd`.
+  The optional `{ purposePrefix }` filter (matched with `starts_with`, so `_` is literal) gives
+  the agent sub-limit usage for `agent_*` purposes against `agent_daily_limit_usd` (D044); it
+  uses the same `(created_at)` range index.
+- `getLlmBudgetUsageForRun` sums one run's calls with the same conservative accounting (the
+  per-task cap, `AGENT_TASK_MAX_USD`); it uses the `(run_id)` index.
+  Since phase 05 increment 5, browser model admission also sums the pinned intake run id from
+  `telegram_messages.payload.browserIntakeRunId` into the same task cap; run ids are deduplicated.
+  Each run still uses `llm_calls(run_id)`; daily admission counts every `agent_*` call once.
 - If the reservation is non-positive or its insert fails, the model call is not attempted.
 
 Indexes: `(run_id)`; `(created_at)` for daily spend/budget ranges; partial `(created_at)` where
@@ -456,7 +472,7 @@ status is not succeeded/failed for stale in-flight/unknown recovery.
 | `run_id` | uuid not null | → runs, cascade |
 | `tool_name` | text not null | |
 | `risk_tier` | `risk_tier` not null | snapshot |
-| `status` | `tool_call_status` not null | running/succeeded/failed |
+| `status` | `tool_call_status` not null | running/succeeded/failed/unknown (an uncertain send; never retried) |
 | `args` | jsonb not null default `'{}'` | copy of approval payload for approved calls |
 | `result` | jsonb | cap size in app |
 | `error` | text | |
@@ -466,7 +482,9 @@ status is not succeeded/failed for stale in-flight/unknown recovery.
 | `latency_ms` | integer | null while running; check ≥ 0 |
 
 Checks: `(status = 'running') = (finished_at IS NULL)`; **send-tier calls require a non-null
-`approval_id`**. Indexes: unique partial `(approval_id)` where not null — at most one
+`approval_id`**. `withToolCall` sets `finished_at` from the DB clock (never before `started_at`)
+and accepts `auditResult` so callers store bounded audit data instead of page content; browser
+tools store refs, field keys, and snapshot generations, never field values or snapshot text. Indexes: unique partial `(approval_id)` where not null — at most one
 execution per approval; `(run_id)`; partial `(started_at)` where running.
 
 ### user_settings
@@ -482,6 +500,8 @@ Singleton (`id = 1`).
 | `batch_window_minutes` | integer | null = batching disabled (initial behavior); check null or > 0 |
 | `approval_ttl_minutes` | integer not null default 1440 | check > 0 |
 | `daily_spend_limit_usd` | numeric(10,2) default 1.00 | nullable = no limit; check ≥ 0 |
+| `applicant_profile` | text nullable | complete first-person facts, one per line; app bound 8000 characters, SQL nonblank/length check; local `agent:profile` CLI; never printed in full (D051) |
+| `agent_daily_limit_usd` | numeric(10,2) default 0.50 | agent sub-limit inside the global limit (D044); counts `agent_*` purposes; nullable = global limit only; check ≥ 0 |
 | `created_at`, `updated_at` | timestamptz not null | |
 
 Migration `0003` seeds row `id = 1` with `Asia/Kolkata`, null quiet hours, null batch window, and
@@ -544,6 +564,145 @@ additionally require an `email_triage` outbox row with matching `telegram_messag
 `telegram_message_id bigint`, `payload jsonb not null`, `received_at timestamptz not null`,
 `processed_at timestamptz`, `error text`. Index `(received_at)` for pruning. Claim via
 `INSERT ... ON CONFLICT (update_id) DO NOTHING`.
+
+### browser_tasks
+
+One requested browser action (phase 05, D042/D055). `spec` pins user field values or a pending
+composition request at intake; generated values are persisted with provenance before browser fill.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | uuid PK | |
+| `source` | `browser_task_source` not null | telegram/schedule/retry |
+| `request_message_id` | uuid | → telegram_messages, set null; unique where not null (intake idempotency) |
+| `retry_of_task_id` | uuid | → browser_tasks, set null; not self |
+| `run_id` | uuid | → runs, restrict; the `browser_task` run, null until the job starts |
+| `site`, `action` | text not null | validated by the site registry in code (open catalog) |
+| `target_url` | text not null | 1–2048 chars |
+| `instruction` | text not null default `''` | ≤ 4000 chars |
+| `spec` | jsonb not null | task spec v1 (below) |
+| `status` | `browser_task_status` not null default `queued` | |
+| `status_reason` | text | catalog below; 1–64 chars |
+| `approval_id` | uuid | → approvals, restrict |
+| `cancel_requested_at` | timestamptz | Stop tapped |
+| `submitted_at` | timestamptz | set when the submit click starts |
+| `result` | jsonb | result v1: bounded evidence URL / screenshot artifact id / summary only |
+| `cdp_target_id`, `boss_job_id` | text, uuid | correlation |
+| `started_at`, `finished_at` | timestamptz | |
+| `created_at`, `updated_at` | timestamptz not null | |
+
+Checks: `finished_at` is null exactly when status is `queued`, `running`, `waiting_for_human`,
+`awaiting_approval`, or `executing`; `submitted_at` is not null for `succeeded`, `unverified`, and
+`outcome_unknown`; the bounds above. Indexes: unique `((true))` where status is `running`,
+`waiting_for_human`, `awaiting_approval`, or `executing` (one task holds the browser); unique
+partial `(request_message_id)`; partial `(status, created_at)` for open statuses (recovery and the
+queue); `(created_at desc)` for `/tasks`; partial `(site, action, submitted_at)` where submitted
+(daily caps); partial `(approval_id)`.
+
+`status_reason` catalog (`src/agent/contracts.ts`): `interrupted`, `approval_expired`,
+`budget_exhausted`, `daily_cap`, `precondition_failed`, `step_limit`, `login_required`,
+`handoff_timeout`, `handoff_limit`, `cancelled_by_user`, `confirmation_required` (a queued task
+that cannot start until the user taps its unexpired Start card), `advice_required` (queued
+awaiting a reply; never automatically claimed/requeued), `already_applied`, and `schedule_missed`.
+
+### browser_handoffs
+
+A pause for the user to fix a captcha/login/2FA/verification page over the phone view (D047).
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | uuid PK | |
+| `task_id` | uuid not null | → browser_tasks, cascade |
+| `run_id` | uuid not null | → runs, restrict |
+| `reason` | `browser_handoff_reason` not null | |
+| `detail` | text | ≤ 1000 chars |
+| `page_url` | text | ≤ 2048 chars |
+| `screenshot_artifact_id` | uuid | → artifacts, set null |
+| `notification_id` | uuid | → notification_outbox, set null (the outbox never links back) |
+| `status` | `browser_handoff_status` not null default `waiting` | |
+| `requested_at`, `expires_at` | timestamptz not null | expiry after request (`BROWSER_HANDOFF_TIMEOUT_MINUTES`) |
+| `resolved_at` | timestamptz | null exactly while `waiting` |
+| `resolver_ref` | text | `update:<telegram update id>`; null for system resolutions |
+
+Indexes: unique `(task_id)` where waiting; `(task_id)`.
+
+Increment 4 creates the handoff, `waiting_for_human` task transition, and linked `system`
+notification atomically. The notification explicitly uses `at_least_once` and dedupe key
+`browser:handoff:<handoff id>`; its photo and buttons reference stored artifact/handoff ids.
+Done conditionally resolves only an unexpired waiting handoff from the linked delivered card.
+The job then resumes `running` and takes a fresh snapshot; a remaining detector hit creates
+another handoff (at most three rows per task, counted through the task history index).
+Stop, timeout, and shutdown close the task and waiting handoff together. Done/Stop/resume
+serialize on the task row lock; replayed callbacks cannot resume a later handoff.
+
+### artifacts
+
+Stored files (screenshots) content-addressed under `ARTIFACT_DIR` (directories 0700, files 0600).
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | uuid PK | |
+| `kind` | `artifact_kind` not null | |
+| `task_id` | uuid | → browser_tasks, set null |
+| `sha256` | text not null | check `^[0-9a-f]{64}$` |
+| `mime` | text not null | |
+| `byte_size` | integer not null | check > 0 |
+| `storage_path` | text not null | relative to `ARTIFACT_DIR` (`<aa>/<sha256>.<ext>`); check: not empty, not absolute, no `..` segment |
+| `created_at` | timestamptz not null | |
+| `deleted_at` | timestamptz | retention tombstone; the file is removed, the row kept |
+
+Indexes: unique `(kind, sha256)`; partial `(created_at)` where not deleted (retention);
+partial `(task_id)`.
+
+### Browser payload contracts (phase 05)
+
+Schemas live in `src/agent/contracts.ts` (zod, strict objects).
+
+- **Task spec v1** (`browser_tasks.spec`): `{version: 1, targetUrl: https, fields: [{key, value,
+  provenance: user_verbatim|drafted}]}`; 1–8 unique keys; values 1–3000 chars. Reddit posts
+  require `post_title` (≤300 chars) and `post_body`; the subreddit is pinned in the canonical
+  target URL. The complete approval text must fit one Telegram card (≤3800 chars). Pending
+  application notes instead have `composeNote: true` and empty fields; their profile-backed
+  drafted `application_note` is persisted before fill (≤1500 chars; D051). Pending Reddit comments
+  instead have empty fields and `composeComment: {thoughts, priorRunIds, question?, answer?}`
+  (thoughts/answer ≤3000 chars, question ≤300 chars, at most eight run UUIDs). Only one composer
+  can be pending. The resulting `comment_text` is `drafted` and ≤800 chars (D055).
+- **Submit approval payload v1** (`approvals.payload`, `tool_name = 'browser.submit'`,
+  `risk_tier = 'send'`, dedupe key `browser:approval:<taskId>`): `{version: 1, taskId, site, action,
+  targetUrl, pageUrl, fields: [{key, label, role, name, value, provenance}], submit: {role, name},
+  screenshot: {artifactId, sha256}, preparedAt}`. Immutable; the executor's only argument source.
+- **Task result v1** (`browser_tasks.result`): `{version: 1, evidenceUrl?, screenshotArtifactId?,
+  summary? (≤ 500)}`.
+- **Outbox payload v1 (in use since increment 3, no schema change):** optional
+  `photo: {artifactId, sha256}` and an https URL button variant `{text, url}` (D045). The
+  dispatcher sends a photo with the body as its caption when the artifact row exists, its sha256
+  matches, and the body fits Telegram's 1024-character caption limit; otherwise it sends text,
+  still one API call per row. Browser card dedupe keys:
+  `browser:approval:<taskId>` (`approval_request`), `browser:task:<taskId>:queued|result|recovered`
+  (`system`), `browser:task:<taskId>:draft` (`system`, at-least-once),
+  `browser:handoff:<handoffId>` (`system`, at-least-once), and
+  `browser:intake:<messageId>:invalid|unclear|schedule` (`system`).
+- **Intake metadata v1** (`telegram_messages.payload`, increment 5): `browserIntake` caches
+  `{version:1, kind:one_off|schedule|unclear|invalid, ...}`. Action decisions include site,
+  action and a validated spec; schedules additionally include cron/timezone (Asia/Kolkata).
+  `browserIntakeRunId` links paid parsing to subsequent task-budget admission.
+  `browserScheduleDraft` retains the inert schedule decision plus the original instruction.
+  The original Telegram update stays present; `reply_to_telegram_message_id` is stored for
+  traceability but reply content/history never enters the parse prompt.
+- **Replay card metadata v1** (`notification_outbox.payload`):
+  `browserTaskDraft: {version:1, taskId}` with Start/Stop. The associated task is queued with
+  `status_reason=confirmation_required`. Start validates the delivered outbox row and expiry
+  (30 minutes after task creation), queues while holding the task lock, then clears the gate.
+  Browser consumers lock before reading the gate, avoiding early consumption before Start commits.
+- **Comment advice (D055):** `browser:task:<taskId>:advice` is an at-least-once system notification
+  with `browserCommentAdvice: {version:1,taskId}` and Stop. The task remains `queued/advice_required`
+  until a reply to the delivered message from its originating chat arrives or the task is cancelled.
+  Original chat identity follows retry ancestry when needed. Accepted inbound messages cache
+  `browserCommentAdviceConsumed: {taskId}`. Consumption and pg-boss enqueue share one transaction.
+  Stale replies use `browser:task:<taskId>:answer-draft` with the usual `browserTaskDraft` metadata
+  and a fresh 30-minute expiry from answer consumption; fresh answers use `:answer` for acknowledgement.
+  No new columns, enums, tables or indexes are required.
+  Active schedules and paginated `browserTaskList`/`browserScheduleList` metadata are implemented in increment 7.
 
 ## View: `classifier_feedback_examples`
 
@@ -726,10 +885,34 @@ terminal statuses; only the reservation is guaranteed for `in_flight`/`unknown`.
 
 ```text
 run:        running → succeeded | failed | cancelled
-tool_call:  running → succeeded | failed
+tool_call:  running → succeeded | failed | unknown
 ```
 
-Terminal rows require `finished_at`; running tool calls can be found and reconciled.
+Terminal rows require `finished_at`; running tool calls can be found and reconciled. `unknown`
+is a send whose outcome could not be determined (crash mid-click); it is never retried.
+
+### browser_tasks / browser_handoffs (phase 05)
+
+```text
+task:      queued → running ⇄ waiting_for_human
+           running → awaiting_approval → executing → succeeded | unverified | outcome_unknown | failed
+           running → queued(advice_required) → queued(ready | confirmation_required) → running
+           running → succeeded (read-only report) | failed | cancelled
+           awaiting_approval → cancelled | failed(approval_expired)
+           held browser states → failed(interrupted) on shutdown or startup recovery
+handoff:   waiting → resolved | cancelled | timed_out | interrupted
+```
+
+Transitions are conditional updates in application code (increment 3). Approval execution claims
+the approval through the unique `tool_calls.approval_id` index before any click. A Stop ends
+queued/awaiting-approval tasks immediately, asks a running agent to stop through
+`cancel_requested_at`, and never aborts a submit that has started (`executing`). Startup recovery
+maps a `running` send tool call to `outcome_unknown`, a `succeeded` send call to `unverified`
+(the deterministic verification was not persisted), and a `failed`/missing call to
+`failed(interrupted)`; the approval stays consumed in every case. Note: the submitted CHECK
+requires `submitted_at` for `succeeded`, so a read-only report task cannot end `succeeded`
+without a submission; v1 site actions all submit, and a read-only action would need its own
+decision before it ships.
 
 ## Index → query map
 
@@ -760,7 +943,7 @@ Terminal rows require `finished_at`; running tool calls can be found and reconci
 | `runs(kind, started_at desc)` | run listing |
 | `runs(started_at)` partial running | stale worker sweep |
 | `runs(parent_run_id)`, `(boss_job_id)` partial | trace tree / job correlation |
-| `llm_calls(run_id)`, `(created_at)` | trace / daily spend, budget ranges |
+| `llm_calls(run_id)`, `(created_at)` | trace and per-task cap (`getLlmBudgetUsageForRun`) / daily spend, budget ranges |
 | `llm_calls(created_at)` partial unresolved | stale in-flight/unknown reservation recovery |
 | `tool_calls(approval_id)` unique partial | at-most-once execution |
 | `tool_calls(run_id)`, `(started_at)` partial running | trace / stuck calls |
@@ -774,6 +957,17 @@ Terminal rows require `finished_at`; running tool calls can be found and reconci
 | `telegram_messages(chat_id, created_at)` | conversation history |
 | `telegram_updates(update_id)` PK | update idempotency |
 | `telegram_updates(received_at)` | pruning |
+| `browser_tasks ((true))` unique partial holding statuses | one task holds the browser |
+| `browser_tasks(request_message_id)` unique partial | intake idempotency on replay |
+| `browser_tasks(status, created_at)` partial open | queue scan / startup recovery |
+| `browser_tasks(created_at desc)` | `/tasks` recent list |
+| `browser_tasks(site, action, submitted_at)` partial | per-site daily caps |
+| `browser_tasks(approval_id)` partial | approval → task lookup |
+| `browser_handoffs(task_id)` unique partial waiting | one waiting handoff per task |
+| `browser_handoffs(task_id)` | task handoff history / limit |
+| `artifacts(kind, sha256)` unique | content-addressed dedupe |
+| `artifacts(created_at)` partial live | retention sweep |
+| `artifacts(task_id)` partial | task artifacts |
 
 ## Retention and pruning
 
@@ -801,6 +995,10 @@ No pruning jobs run in V1. This is the intended policy for later phases:
 - **telegram_messages:** retain for agent context; a later cap/policy can trim oldest turns.
 - **account_credentials:** cascade with account deletion; disable (`accounts.status`) instead
   of deleting accounts while mail exists.
+- **artifacts:** screenshots are deleted from disk after 14 days (proposed default) and the row
+  is tombstoned with `deleted_at`; outbox/handoff payloads keep only the id and hash.
+- **browser_tasks, browser_handoffs:** retain for audit like approvals; handoffs cascade only
+  with a deliberately deleted task.
 - No hard timestamps are fixed yet; the retention windows are a later configuration task.
 
 ## Later migrations (designed, not implemented)
@@ -868,4 +1066,33 @@ kind-context check belongs in that later migration.
   makes `email_classifications.category` nullable and tightens the decision-source check so only
   classifier rows carry an urgency category. Migration `0007` adds `messages.triage_next_attempt_at`
   for bounded classification backoff and `llm_calls.cache_write_tokens` for complete usage/cost
-  auditing; it also extends the non-negative check. No pg-boss table is modeled or migrated.
+  auditing; it also extends the non-negative check. Migration `0008` only adds `run_kind`
+`browser_task` and `tool_call_status` `unknown`. Migration `0009` creates the phase 05 enum types,
+`browser_tasks`, `browser_handoffs`, `artifacts`, and `user_settings.agent_daily_limit_usd`; its
+predicates use only values created by `CREATE TYPE` in the same migration, so a fresh database can
+apply `0008` and `0009` in one transaction. No pg-boss table is modeled or migrated.
+
+Migration `0010` (phase 05 increment 6) adds `user_settings.applicant_profile` with its
+nonblank/8000-character check; no new tables or indexes. Pending application specs use
+`composeNote: true` with empty fields, then persist the drafted note before browser fill (D051).
+
+
+### Browser schedules (phase 05 increment 7)
+
+Migration 0011 adds `browser_schedules`: UUID id; bounded cron/instruction; timezone fixed to
+Asia/Kolkata; registry site/action; JSONB spec_template; enabled; timestamptz next_run_at,
+last_run_at and created_at/updated_at; nullable created_from_message_id (set null on message delete).
+The enabled partial next_run_at index supports the minutely due scan. A partial unique
+created_from_message_id index makes activation idempotent. Lists are small and use creation order.
+Browser tasks gain schedule_id and scheduled_for with a both-null/both-set check and unique
+(schedule_id, scheduled_for) partial index for slot idempotency. Schedule deletion is restricted
+while tasks reference it: disabling is the supported operation, preserving paired timestamps/history.
+Retention uses the existing artifacts live-created index; re-storing bytes refreshes created_at.
+Health counts task states/reasons without exposing task content. No new enum values or pg-boss DDL.
+
+Schedule drafts use `notification_outbox.payload.browserScheduleDraft = {version:1,messageId}`
+plus an expiry. The inbound message caches a `browserScheduleResolution` (saved/cancelled) under
+its row lock. Task/schedule lists use outbound `telegram_messages.payload.browserTaskList` or
+`browserScheduleList` with `{version:1,offset,ids,expiresAt}`; callbacks must match the stored ids.
+The latest system heartbeat query filters `runs.input.job = heartbeat`, excluding operational ticks.
+`status_reason = schedule_missed` reports a queued schedule slot that exceeded its 30-minute grace.

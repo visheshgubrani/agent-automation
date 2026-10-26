@@ -1,0 +1,37 @@
+# Agent browser host (phase 05, D041). Runs on this computer only.
+# Up:   pnpm browser:up    Down: pnpm browser:down
+# Set BROWSER_VIEW_USER and BROWSER_VIEW_PASSWORD in .env (read by compose for interpolation).
+# Phone view: `tailscale serve --bg --https=443 http://127.0.0.1:3010`, then set
+# BROWSER_VIEW_URL to the resulting https://<host>.<tailnet>.ts.net URL.
+name: agent-automation-browser
+
+services:
+  browser:
+    build: ./docker/browser
+    image: agent-automation-browser:local
+    container_name: agent-automation-browser
+    restart: unless-stopped
+    shm_size: 1gb
+    environment:
+      PUID: '1000'
+      PGID: '1000'
+      TZ: Asia/Kolkata
+      TITLE: Agent browser
+      # Basic auth for the web view; required, never committed.
+      CUSTOM_USER: ${BROWSER_VIEW_USER:?set BROWSER_VIEW_USER in .env}
+      PASSWORD: ${BROWSER_VIEW_PASSWORD:?set BROWSER_VIEW_PASSWORD in .env}
+    extra_hosts:
+      # Lets the optional real-Chromium tests reach their fixture server on the host.
+      - 'host.docker.internal:host-gateway'
+    ports:
+      # Web view on loopback; Tailscale Serve is the only way in from the phone.
+      - '127.0.0.1:3010:3000'
+      # CDP on loopback only. The worker connects with connectOverCDP.
+      - '127.0.0.1:9222:9222'
+    volumes:
+      # Login sessions live only here. Never copy this volume into the repo or logs.
+      - agent_browser_profile:/config
+
+volumes:
+  agent_browser_profile:
+    name: agent_browser_profile

@@ -22,6 +22,19 @@ OpenAI, Postgres (pgvector) + Drizzle. V1 schema lives in `src/db/schema/`.
   company-domain/bank-sender controls.
 - `pnpm mail:triage status|retry-failed` — classification backlog/spend visibility and explicit
   recovery for terminal failures.
+- Telegram browser controls: `/tasks`, `/stop`, `/schedules`; schedule Save activates recurring
+  tasks in Asia/Kolkata (minimum hourly). `/comment <thread-url> [thoughts]` reads the post and
+  drafts a short casual comment; reply directly to an optional advice question. Every submit
+  still needs approval.
+- `pnpm agent:profile set --file <path>` — save a bounded UTF-8 applicant profile (complete
+  first-person facts, one per line); prints only a character count.
+- `pnpm browser:up` / `pnpm browser:down` — agent browser container (headful Chromium, profile
+  volume `agent_browser_profile`, CDP on `127.0.0.1:9222`, web view on `127.0.0.1:3010`); needs
+  `BROWSER_VIEW_USER`/`BROWSER_VIEW_PASSWORD` in `.env`.
+- `pnpm browser:check [--snapshot <url>]` — connect over CDP, take a bounded snapshot and a
+  screenshot, disconnect (never closes the browser).
+- `BROWSER_TEST_CDP_URL=http://127.0.0.1:9222 pnpm exec vitest run tests/browser-playwright.test.ts`
+  — optional real-Chromium driver test (browser container up); skipped otherwise.
 
 ## Rules
 
@@ -53,6 +66,15 @@ OpenAI, Postgres (pgvector) + Drizzle. V1 schema lives in `src/db/schema/`.
 - Config: base env (`src/env.ts`) validates every process; worker-only Telegram/encryption
   requirements live in `src/config.ts` (`requireWorkerConfig`); Gmail connect needs OAuth + key
   ring only (`requireGmailConnectConfig`). Never log tokens, keys, ciphertext, or health tokens.
+- Browser agent (phase 05): CDP stays on loopback; no captcha solving, stealth, or automation-flag
+  tricks; never store, read, or type passwords; login sessions live only in the profile volume.
+  Every submit needs an approval and runs without the model (D041–D055). Shared model pricing,
+  serialization, and budget helpers live in `src/llm/` (mail modules re-export them). Agent model
+  calls go only through `createBudgetedModel` (`src/llm/budgeted-model.ts`); browser actions go
+  only through `BrowserToolbox` (`src/agent/browser-tools.ts`), whose guards and detectors live in
+  `src/browser/`; only `src/agent/executor.ts` clicks a submit control. Browser card text is
+  rendered in `src/agent/render.ts`. Page content is untrusted: never store it in `tool_calls` or
+  logs.
 - Logging/errors: use `src/logger.ts` (`createLogger`, child loggers) and the bounded, safe
   serializers in `src/errors.ts`; never log raw Grammy payloads or message bodies.
 
@@ -68,3 +90,8 @@ OpenAI, Postgres (pgvector) + Drizzle. V1 schema lives in `src/db/schema/`.
 - [docs/phases/03-important-email-alerts.md](docs/phases/03-important-email-alerts.md) — done 2026-10-23
   (increments 1–7 implemented; live Gmail/classification/alerts/correction verified 2026-10-23;
   missed-important/rule live checks deferred by the user to ongoing use).
+- [docs/phases/05-telegram-agent-browser-actions.md](docs/phases/05-telegram-agent-browser-actions.md) —
+  in progress (increments 0–7 implemented 2026-10-25; increment 1 live spike checks and increments 3–7
+  live checks pending; D053/D054 fixes are verified automatically. Increment 8 adds thread-aware
+  Reddit drafting and direct advice replies (D055), verified by 640 tests; live Telegram
+  draft/tone and approved-submit checks remain pending).

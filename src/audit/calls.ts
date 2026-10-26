@@ -1,4 +1,4 @@
-import { and, eq, lt } from 'drizzle-orm'
+import { and, eq, lt, sql } from 'drizzle-orm'
 import { type Db, db as defaultDb } from '../db/index.js'
 import { llmCalls, type reasoningEffort, type riskTier, toolCalls } from '../db/schema/index.js'
 import { errorMessage } from '../errors.js'
@@ -28,6 +28,18 @@ export class ToolCallError extends Error {
     super(message)
     this.name = 'ToolCallError'
     this.reason = 'approval_required'
+  }
+}
+
+/**
+ * Throw from a tool-call handler when the side effect (a submit click) may have happened but
+ * its outcome cannot be determined. The audit row becomes `unknown`, is never retried, and
+ * the enclosing task is reported as `outcome_unknown`.
+ */
+export class ToolCallOutcomeUnknownError extends Error {
+  constructor(message: string, options: { cause?: unknown } = {}) {
+    super(message, { cause: options.cause })
+    this.name = 'ToolCallOutcomeUnknownError'
   }
 }
 
@@ -244,6 +256,29 @@ export async function recoverStaleInFlightLlmCalls(
   return rows.length
 }
 
+/**
+ * Mark one in-flight tool call `unknown`, keeping its row: used by startup recovery for a
+ * send whose click may have happened before the worker died.
+ */
+export async function markToolCallUnknown(
+  db: Db,
+  id: string,
+  options: { error?: unknown } = {},
+): Promise<void> {
+  await db
+    .update(toolCalls)
+    .set({
+      status: 'unknown',
+      // Never before started_at, even under app/DB clock skew.
+      finishedAt: sql`greatest(clock_timestamp(), ${toolCalls.startedAt})`,
+      error: errorMessage(
+        options.error ?? new Error('interrupted: tool-call outcome unknown'),
+        CALL_ERROR_LIMIT,
+      ),
+    })
+    .where(eq(toolCalls.id, id))
+}
+
 export interface WithToolCallOptions {
   runId: string
   toolName: string
@@ -260,16 +295,24 @@ export interface WithToolCallOptions {
   log?: Logger
 }
 
+export interface WithToolCallAuditOptions<T> extends WithToolCallOptions {
+  /**
+   * Maps the handler's result to what is stored in `tool_calls.result`. Use it when the result
+   * carries untrusted or large content (page snapshots) that must not be persisted.
+   */
+  auditResult?: (result: T) => unknown
+}
+
 /**
  * Audit wrapper for one tool invocation: inserts a `running` row first (the at-most-once
  * claim for approved executions), runs the handler with the row id, then finalizes to
  * `succeeded`/`failed` with bounded error text. The handler's error is always rethrown.
  *
- * `send` tier without an `approvalId` is rejected before any row exists. No runtime consumer
- * until phase 05; the interface may need small reshaping then.
+ * `send` tier without an `approvalId` is rejected before any row exists. The browser tool layer
+ * (phase 05) is the first consumer; it passes `auditResult` so page content is never stored.
  */
 export async function withToolCall<T>(
-  options: WithToolCallOptions,
+  options: WithToolCallAuditOptions<T>,
   handler: (toolCallId: string) => Promise<T>,
 ): Promise<T> {
   const db = options.db ?? defaultDb
@@ -298,12 +341,17 @@ export async function withToolCall<T>(
   }
 
   const startedAt = Date.now()
-  const finalize = (status: 'succeeded' | 'failed', patch: { result?: unknown; error?: unknown }) =>
+  const finalize = (
+    status: 'succeeded' | 'failed' | 'unknown',
+    patch: { result?: unknown; error?: unknown },
+  ) =>
     db
       .update(toolCalls)
       .set({
         status,
-        finishedAt: new Date(),
+        // DB clock, never before started_at (also DB clock): a fast call must not trip the
+        // finished-after-started check through app/DB clock skew.
+        finishedAt: sql`greatest(clock_timestamp(), ${toolCalls.startedAt})`,
         latencyMs: Math.max(0, Date.now() - startedAt),
         ...(patch.result !== undefined ? { result: patch.result } : {}),
         ...(patch.error !== undefined
@@ -315,14 +363,16 @@ export async function withToolCall<T>(
   try {
     const result = await handler(row.id)
     try {
-      await finalize('succeeded', { result: result === undefined ? null : result })
+      const audited = options.auditResult !== undefined ? options.auditResult(result) : result
+      await finalize('succeeded', { result: audited === undefined ? null : audited })
     } catch (auditError) {
       log.error({ err: errorMessage(auditError) }, 'failed to record tool call success')
     }
     return result
   } catch (error) {
+    const unknown = error instanceof ToolCallOutcomeUnknownError
     try {
-      await finalize('failed', { error })
+      await finalize(unknown ? 'unknown' : 'failed', { error })
     } catch (auditError) {
       log.error({ err: errorMessage(auditError) }, 'failed to record tool call failure')
     }

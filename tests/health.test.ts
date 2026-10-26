@@ -102,7 +102,11 @@ describe('GET /health/details (token protected)', () => {
     await createSystemNotification({ dedupeKey: 'system:quarantined', status: 'quarantined' })
     await createSystemNotification({ dedupeKey: 'system:failed', status: 'failed', lastError: 'x' })
     const dispatchRun = await createRun({ kind: 'notification_dispatch', trigger: 'schedule' })
-    const heartbeatRun = await createRun({ kind: 'system', trigger: 'schedule' })
+    const heartbeatRun = await createRun({
+      kind: 'system',
+      trigger: 'schedule',
+      input: { job: 'heartbeat' },
+    })
     const mailSyncRun = await createRun({ kind: 'mail_sync', trigger: 'schedule' })
     const account = await createAccount({ emailAddress: 'health@example.test' })
     await createMailboxSyncState(account.id, {

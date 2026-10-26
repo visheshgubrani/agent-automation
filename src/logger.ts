@@ -16,6 +16,9 @@ const REDACT_KEYS = [
   'healthToken',
   'openaiApiKey',
   'clientSecret',
+  // Browser sessions live only in the profile volume; never log cookies (phase 05).
+  'cookie',
+  'cookies',
   // Defense in depth if an env object is ever logged.
   'TELEGRAM_BOT_TOKEN',
   'TOKEN_ENCRYPTION_KEYS',
@@ -25,6 +28,7 @@ const REDACT_KEYS = [
   'GMAIL_REFRESH_TOKEN',
   'DATABASE_URL',
   'TEST_DATABASE_URL',
+  'BROWSER_VIEW_PASSWORD',
 ] as const
 
 // Cover top-level and nested fields without listing every possible log shape.

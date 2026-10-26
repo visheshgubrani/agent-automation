@@ -1,4 +1,4 @@
-import { Api } from 'grammy'
+import { Api, InputFile } from 'grammy'
 import {
   type InlineButtonRows,
   type TelegramReplyMarkup,
@@ -8,6 +8,9 @@ import {
 
 /** Telegram message length cap for plain-text sendMessage calls. */
 export const TELEGRAM_BODY_LIMIT = 4096
+
+/** Telegram caption length cap when a message carries a photo. */
+export const TELEGRAM_CAPTION_LIMIT = 1024
 
 /** Default per-send deadline. Shutdown does not abort the in-flight send; this bounds it. */
 export const TELEGRAM_SEND_TIMEOUT_MS = 15_000
@@ -20,6 +23,17 @@ export class TelegramBodyTooLongError extends Error {
   constructor(length: number) {
     super(`telegram body too long: ${length} > ${TELEGRAM_BODY_LIMIT} characters`)
     this.name = 'TelegramBodyTooLongError'
+    this.length = length
+  }
+}
+
+/** Thrown before any API call when a photo caption exceeds Telegram's caption limit. */
+export class TelegramCaptionTooLongError extends Error {
+  readonly length: number
+
+  constructor(length: number) {
+    super(`telegram caption too long: ${length} > ${TELEGRAM_CAPTION_LIMIT} characters`)
+    this.name = 'TelegramCaptionTooLongError'
     this.length = length
   }
 }
@@ -52,6 +66,12 @@ export type TelegramApi = {
     other?: { reply_markup?: TelegramReplyMarkup },
     signal?: AbortSignal,
   ): Promise<{ message_id: number }>
+  sendPhoto(
+    chatId: number,
+    photo: InputFile,
+    other?: { caption?: string; reply_markup?: TelegramReplyMarkup },
+    signal?: AbortSignal,
+  ): Promise<{ message_id: number }>
 }
 
 export interface TelegramSendOptions {
@@ -64,7 +84,7 @@ export interface TelegramSendResult {
   messageId: number
 }
 
-/** Sends plain-text messages to the single configured chat. */
+/** Sends plain-text messages and screenshots to the single configured chat. */
 export interface TelegramSender {
   readonly chatId: number
   /**
@@ -73,6 +93,15 @@ export interface TelegramSender {
    * all other errors are network/API failures for `classifyTelegramSendError` to categorize.
    */
   send(text: string, options?: TelegramSendOptions): Promise<TelegramSendResult>
+  /**
+   * Send one PNG screenshot with a caption, optionally with inline buttons. The caption has its
+   * own 1024-character limit, enforced before any API call.
+   */
+  sendPhoto(
+    photo: Uint8Array,
+    caption: string,
+    options?: TelegramSendOptions,
+  ): Promise<TelegramSendResult>
 }
 
 export interface CreateTelegramSenderOptions {
@@ -84,9 +113,17 @@ export interface CreateTelegramSenderOptions {
   api?: TelegramApi
 }
 
+function prepareMarkup(buttons: InlineButtonRows | undefined): TelegramReplyMarkup | undefined {
+  if (buttons === undefined) return undefined
+  const validated = validateInlineButtons(buttons)
+  if (validated === undefined) throw new TelegramInvalidButtonsError()
+  return toTelegramReplyMarkup(validated)
+}
+
 /**
  * Telegram delivery adapter for the outbox dispatcher: fixed recipient, no parse mode,
- * 15s abortable timeout, 4096-character guard, and validated inline buttons.
+ * 15s abortable timeout, 4096-character text guard (1024 for captions), and validated
+ * inline buttons.
  */
 export function createTelegramSender(options: CreateTelegramSenderOptions): TelegramSender {
   const { chatId } = options
@@ -97,31 +134,46 @@ export function createTelegramSender(options: CreateTelegramSenderOptions): Tele
     options.api ?? (new Api(options.botToken ?? '') as unknown as TelegramApi)
   const timeoutMs = options.timeoutMs ?? TELEGRAM_SEND_TIMEOUT_MS
 
+  // Aborting with a TimeoutError reason makes the fetch reject with it, so grammy wraps it in
+  // an HttpError whose cause chain classifies as an uncertain timeout.
+  const withDeadline = async <T>(call: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(new SendTimeoutError(timeoutMs)), timeoutMs)
+    try {
+      return await call(controller.signal)
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   return {
     chatId,
     async send(text: string, sendOptions?: TelegramSendOptions): Promise<TelegramSendResult> {
       if (text.length > TELEGRAM_BODY_LIMIT) {
         throw new TelegramBodyTooLongError(text.length)
       }
-
-      const buttons =
-        sendOptions?.buttons === undefined ? undefined : validateInlineButtons(sendOptions.buttons)
-      if (sendOptions?.buttons !== undefined && buttons === undefined) {
-        throw new TelegramInvalidButtonsError()
+      const replyMarkup = prepareMarkup(sendOptions?.buttons)
+      const other = replyMarkup === undefined ? undefined : { reply_markup: replyMarkup }
+      const message = await withDeadline((signal) => api.sendMessage(chatId, text, other, signal))
+      return { messageId: message.message_id }
+    },
+    async sendPhoto(
+      photo: Uint8Array,
+      caption: string,
+      sendOptions?: TelegramSendOptions,
+    ): Promise<TelegramSendResult> {
+      if (photo.byteLength === 0) throw new Error('refusing to send an empty photo')
+      if (caption.length > TELEGRAM_CAPTION_LIMIT) {
+        throw new TelegramCaptionTooLongError(caption.length)
       }
-
-      // Aborting with a TimeoutError reason makes the fetch reject with it, so grammy wraps
-      // it in an HttpError whose cause chain classifies as an uncertain timeout.
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(new SendTimeoutError(timeoutMs)), timeoutMs)
-      try {
-        const other =
-          buttons === undefined ? undefined : { reply_markup: toTelegramReplyMarkup(buttons) }
-        const message = await api.sendMessage(chatId, text, other, controller.signal)
-        return { messageId: message.message_id }
-      } finally {
-        clearTimeout(timer)
+      const replyMarkup = prepareMarkup(sendOptions?.buttons)
+      const file = new InputFile(photo, 'screenshot.png')
+      const other = {
+        caption,
+        ...(replyMarkup !== undefined ? { reply_markup: replyMarkup } : {}),
       }
+      const message = await withDeadline((signal) => api.sendPhoto(chatId, file, other, signal))
+      return { messageId: message.message_id }
     },
   }
 }

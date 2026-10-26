@@ -1,0 +1,2 @@
+ALTER TABLE "user_settings" ADD COLUMN "applicant_profile" text;--> statement-breakpoint
+ALTER TABLE "user_settings" ADD CONSTRAINT "user_settings_applicant_profile_check" CHECK ("user_settings"."applicant_profile" is null or (char_length("user_settings"."applicant_profile") between 1 and 8000 and char_length(btrim("user_settings"."applicant_profile")) > 0));

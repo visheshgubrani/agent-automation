@@ -1,0 +1,4 @@
+#!/usr/bin/with-contenv bash
+# Container port 9222 -> Chrome's loopback debugging port 9223. Compose publishes 9222 on the
+# host's 127.0.0.1 only; CDP is never exposed beyond loopback.
+exec s6-setuidgid abc socat TCP-LISTEN:9222,fork,reuseaddr TCP:127.0.0.1:9223

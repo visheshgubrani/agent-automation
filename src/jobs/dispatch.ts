@@ -1,5 +1,6 @@
 import type { Logger } from '../logger.js'
 import { type DispatchTickOutcome, runDispatchTick } from '../notifications/dispatcher.js'
+import type { OutboxPhoto } from '../notifications/outbox.js'
 import type { TelegramSender } from '../telegram/sender.js'
 
 export interface DispatchJobContext {
@@ -9,6 +10,8 @@ export interface DispatchJobContext {
   sender: TelegramSender
   /** Worker-shutdown flag: stops new claims, lets the in-flight send finish. */
   signal?: AbortSignal
+  /** Loads screenshots referenced by outbox payloads; text is sent when absent. */
+  loadPhoto?: (photo: OutboxPhoto) => Promise<Uint8Array | undefined>
   log?: Logger
 }
 
@@ -23,5 +26,6 @@ export async function handleDispatchJob(context: DispatchJobContext): Promise<Di
     signal: context.signal,
     log: context.log,
     bossJobId: context.jobId,
+    ...(context.loadPhoto !== undefined ? { loadPhoto: context.loadPhoto } : {}),
   })
 }

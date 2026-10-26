@@ -775,3 +775,393 @@ Date: 2026-10-23 | Status: accepted | Phase: [03](phases/03-important-email-aler
   real-inbox accuracy. Phase 05 remains planned and needs separate approval before implementation.
 - Approval: user request on 2026-10-23: "we will do that over time, for now lets wrap up this phase
   and complete this the phase 3".
+
+## D041: Self-hosted headful browser host with a phone takeover view
+
+Date: 2026-10-25 | Status: accepted | Phase: [05](phases/05-telegram-agent-browser-actions.md)
+- Context: Reddit, YC Work at a Startup, and Wellfound actions need a real logged-in browser.
+  Reddit now gates new Data API tokens behind manual approval; the job sites have no public API.
+  Logins, captchas, and 2FA must be handled by the user, from a phone, without the app ever
+  holding passwords.
+- Choice and reason: run headful Chromium on this computer in a Docker container
+  (`docker-compose.browser.yml`, `docker/browser/`), starting from `lscr.io/linuxserver/chromium`
+  with a custom Xvfb + x11vnc + noVNC image as fallback. Chrome uses a dedicated `--user-data-dir`
+  on a named volume (Chrome 136+ refuses remote debugging on the default profile), `shm_size: 1gb`,
+  `TZ=Asia/Kolkata`, and no automation or stealth flags. CDP is published only on host
+  `127.0.0.1:9222` through socat (headful Chrome ignores `--remote-debugging-address`). The VNC
+  view is served privately over Tailscale Serve (HTTPS `*.ts.net`) with VNC authentication and is
+  linked from Telegram as `BROWSER_VIEW_URL`. The worker connects per task with `connectOverCDP`,
+  opens one page, disconnects, and never closes the browser; sessions persist in the volume.
+- Alternative: hosted browsers (Browserbase and similar); rejected because the user chose
+  self-hosting, and sessions, IP, and screenshots would leave this computer. Headless Chromium;
+  rejected because the user must take over the same live session from a phone.
+- Consequence: live checks need Docker and Tailscale on this computer and the phone. CDP is never
+  exposed beyond loopback, so only processes on this machine can drive the browser. The profile
+  volume holds login sessions and must never be copied into the repo, logs, or docs; no credential
+  columns are added.
+- Approval: product choice (self-hosted browser with a phone takeover link) from the user on
+  2026-10-25; recorded with increment 0 on 2026-10-25. Implementation lands in increment 1.
+- Spike note (2026-10-25, increment 1): the linuxserver Chromium image is now Selkies-based
+  rather than KasmVNC/noVNC. The derived image replaces its launcher, which added `--test-type`,
+  with a minimal one, and adds socat as an s6 service. The web view is published on
+  `127.0.0.1:3010` with required basic auth for Tailscale Serve to front. The choice is unchanged.
+
+## D042: Prepared-form approval with a deterministic, model-free submit
+
+Date: 2026-10-25 | Status: accepted | Phase: [05](phases/05-telegram-agent-browser-actions.md)
+- Context: the user asked for tap-to-approve on every submit. The approved text must be exactly
+  what is posted, and page content must not be able to steer the final action. D008 already makes
+  `approvals.payload` the executed contract with one execution per approval.
+- Choice and reason: the agent prepares the page (navigate, open the composer, fill spec field
+  values only) and calls `request_submit_approval`, which reads every field back, checks exact
+  equality with the spec, checks the submit element against the site's commit pattern, takes a
+  screenshot, and writes the approval (`tool_name='browser.submit'`, `risk_tier='send'`, payload
+  v1), its `approval_request` outbox row, and `awaiting_approval` in one transaction. After
+  Approve, an `approval_execution` child run claims the approval via `withToolCall` with
+  `approvalId`, re-checks URL, field values, and the submit element's role/name/enabled state,
+  clicks once, and verifies deterministically. No model call runs after approval. Any failure
+  after approval ends that approval; a retry is a new task and approval linked by
+  `retry_of_approval_id`. Expiry is `min(approval_ttl_minutes, BROWSER_APPROVAL_TIMEOUT_MINUTES)`.
+  Before approval the tool layer refuses commit-like clicks (except registry-listed pre-commit
+  openers), free-text typing (except bounded search/combo boxes), Ctrl/Meta+Enter, off-allowlist
+  origins, JavaScript eval, and file-system access.
+- Alternative: let the agent click Submit after approval (SDK `toolApproval` or a resumed loop);
+  rejected because a post-approval model step could change the payload, and SDK approvals do not
+  survive worker restarts. Approve only the text and re-prepare the page afterwards; rejected
+  because the approved screenshot would no longer match the submitted form.
+- Consequence: the browser page is held open while the approval is pending (default 30 minutes);
+  expiry offers Retry. Editing the form over VNC while pending fails the pre-click check and
+  submits nothing. An uncertain click becomes `outcome_unknown` and is never retried silently.
+- Approval: product choice (tap-to-approve on every submit) from the user on 2026-10-25; recorded
+  with increment 0 on 2026-10-25. Implementation lands in increment 3.
+
+## D043: AI SDK v7 for the agent only; `playwright-core` plus our own tools
+
+Date: 2026-10-25 | Status: accepted | Phase: [05](phases/05-telegram-agent-browser-actions.md)
+- Context: the agent needs a tool loop whose every model call goes through budget reservation and
+  whose browser tools enforce the D042 guards. The user chose Playwright plus our own tools.
+- Choice and reason: use `ToolLoopAgent` from `ai` v7 with `@ai-sdk/openai` (exact pinned
+  versions), text-only, with `instructions`, `maxRetries: 0`, `stopWhen` on step count /
+  `request_submit_approval` / `report_result`, and `prepareStep` keeping only the latest bounded
+  aria snapshot. The browser layer is `playwright-core` over CDP behind a `BrowserDriver`
+  interface with our own guarded tools and generation-checked snapshot refs. The mail classifier
+  stays on the existing OpenAI Responses client.
+- Alternative: browser-use (Python-only, its own model loop bypassing `llm_calls`, no pre-approval
+  submit guard); Skyvern (heavy AGPL platform with its own database); Playwright MCP (generic tools
+  that cannot restrict typing to approved text or block commit clicks); Stagehand v4 (`agent()`
+  removed, each `act()` makes a hidden model call). All rejected. Stagehand `act`/`observe` remain a
+  fallback behind `BrowserDriver` if plain Playwright struggles in the spike (most likely with
+  Reddit's editor). Migrating the mail classifier to the AI SDK; deferred as out of scope.
+- Consequence: three new dependencies (`ai`, `@ai-sdk/openai`, `playwright-core`) at exact
+  versions. The exact snapshot/ref API is confirmed in the increment 1 spike. Two OpenAI client
+  paths coexist until a later phase consolidates them.
+- Approval: product choice (Playwright plus our own tools) from the user on 2026-10-25; recorded
+  with increment 0 on 2026-10-25. Implementation lands in increments 1–2.
+- Spike note (2026-10-25, increment 1): `playwright-core` 1.64.1 exposes refs as
+  `page.ariaSnapshot({ mode: 'ai' })` + `page.getByRef()`, not `ariaSnapshot({ ref: true })` +
+  `aria-ref=`; the tool layer uses the public API. AI SDK middleware is
+  `LanguageModelMiddleware` v4 with `wrapGenerate`; mocks are `MockLanguageModelV4` from `ai/test`.
+
+## D044: Budgeted model middleware with an agent daily sub-limit
+
+Date: 2026-10-25 | Status: accepted | Phase: [05](phases/05-telegram-agent-browser-actions.md)
+- Context: D031/D036 require every model attempt to reserve worst-case cost before the request.
+  An agent loop makes many calls per task and must not starve mail triage of the shared daily
+  budget.
+- Choice and reason: `src/llm/budgeted-model.ts` wraps the AI SDK model with `wrapLanguageModel`
+  (`wrapGenerate`). Each attempt requires a bounded `maxOutputTokens`, rejects streaming, estimates
+  the reservation with the mail rule (2 tokens per character of prompt and tool schemas plus max
+  output), checks the per-task cap `AGENT_TASK_MAX_USD`, and inside `withSerializedModelCall` admits
+  against both the global daily limit and `user_settings.agent_daily_limit_usd` (default $0.50,
+  purposes prefixed `agent_`, `Asia/Kolkata` local day) before running inside `withLlmCall`.
+  Missing usage records the reservation; SDK errors map via `classifyAiSdkError` to the existing
+  failed/unknown errors. Provider options use `store: false`. Pricing, serialization, and budget
+  helpers move to `src/llm/` with mail re-exports.
+- Alternative: a separate agent budget outside `llm_calls`; rejected because spend would be
+  invisible to existing admission and status. Only a global limit; rejected because one busy agent
+  day could pause classification.
+- Consequence: `AGENT_MODEL` must have configured rates. Budget exhaustion fails the task with
+  `budget_exhausted` and does not wait for the next day. Unknown outcomes stay counted. The model
+  and per-task cap are chosen from measured cost in the increment 1 spike.
+- Approval: recorded with increment 0 on 2026-10-25 using the proposed $0.50 sub-limit default.
+  Implementation lands in increment 2.
+
+## D045: No new outbox kinds; photo payloads and URL buttons
+
+Date: 2026-10-25 | Status: accepted | Phase: [05](phases/05-telegram-agent-browser-actions.md)
+- Context: approval, handoff, result, and recovery cards need screenshots and an "Open browser"
+  link. Adding a `notification_kind` would require replacing the kind-context CHECK in a later
+  migration that runs in the same transaction as the enum addition on a fresh database (D002).
+- Choice and reason: approval cards use the existing `approval_request` kind (which already
+  requires `approval_id`); handoffs, results, and notices use `system`, with handoffs overriding to
+  `at_least_once`. Outbox payload v1 gains an optional `photo: {artifactId, sha256}` and buttons
+  gain an https URL variant. The dispatcher sends a photo with caption when the artifact exists and
+  its sha256 matches, otherwise text, still one API call per row. New tables link to outbox rows;
+  the outbox never links to them. A `notification-dispatch` nudge (`singletonKey: 'nudge'`) sends
+  new cards within seconds.
+- Alternative: new `browser_handoff`/`browser_result` kinds; rejected for the migration hazard
+  above and because the payload already carries the distinction.
+- Consequence: filtering browser cards by kind is not possible; queries go through the linking
+  tables. Screenshots are stored as content-addressed artifacts under `ARTIFACT_DIR` (mode 0700)
+  with retention.
+- Approval: recorded with increment 0 on 2026-10-25. Implementation lands in increments 1 and 3.
+
+## D046: Agent intake, verbatim pinning, and the replay gate (revisits D023)
+
+Date: 2026-10-25 | Status: accepted | Phase: [05](phases/05-telegram-agent-browser-actions.md)
+- Context: D023 kept `drop_pending_updates: false` and noted that replayed agent commands and
+  approvals become harmful once phase 05 lands. The user's own words must not be rewritten by the
+  model or by page content.
+- Choice and reason: keep `drop_pending_updates: false`. The Telegram handler only stores the
+  message and enqueues an `agent-intake` job (Grammy processes updates serially). Increment 3
+  starts with a deterministic `/comment <url>` command; increment 5 adds one structured-output
+  `agent_intake` call that sees only the user's message. A `user_verbatim` value must be an exact
+  substring of the message, otherwise the bot asks for clarification; agent-written text is marked
+  "(drafted)" in the approval. Values are pinned in the task spec before any web content is read.
+  Requests whose `message.date` is older than 10 minutes get a draft card with [Start]. Unique
+  `browser_tasks.request_message_id` makes intake idempotent, and callbacks are validated against
+  the stored outbox row, status, and expiry, so replayed Approve/Done/Stop taps are acknowledged as
+  stale.
+- Alternative: `drop_pending_updates: true`; rejected because requests sent while the worker was
+  down would be lost silently. Let the agent paraphrase user text; rejected because the approval
+  would no longer show the user's words.
+- Consequence: clear one-off requests start immediately (approval still guards the submit);
+  schedules, unclear requests, and stale replays need a confirmation tap.
+- Approval: recorded with increment 0 on 2026-10-25. Implementation lands in increments 3 and 5.
+
+## D047: Human handoff with no captcha solving or evasion
+
+Date: 2026-10-25 | Status: accepted | Phase: [05](phases/05-telegram-agent-browser-actions.md)
+- Context: sites present captchas, login walls, 2FA, and verification pages. Solving or evading
+  them would breach site terms and the project's safety posture.
+- Choice and reason: detectors (login redirects, reCAPTCHA, hCaptcha, Turnstile, Arkose, challenge
+  and 2FA pages) run after navigation, after each click, and before approval; a hit or the agent's
+  `request_human` creates a `browser_handoffs` row, moves the task to `waiting_for_human`, and sends
+  a Telegram card with the reason, a screenshot, the page, and an Open browser link. The user fixes
+  it over the view and taps Done; the agent re-snapshots and detectors run again. Waits are bounded
+  (`BROWSER_HANDOFF_TIMEOUT_MINUTES`, default 15) with at most three handoffs per task. No
+  captcha-solving services, stealth plugins, fingerprint spoofing, or automation-flag tricks; the
+  browser uses the home IP at a human pace within per-site daily caps. The app never stores, reads,
+  or types passwords.
+- Alternative: captcha-solving services or stealth tooling; rejected outright. Failing the task
+  on any challenge; rejected because routine logins and 2FA would make the feature unusable.
+- Consequence: tasks may wait on the user and can time out with `handoff_timeout` or
+  `handoff_limit`. Live checks require the user to log in to each site through the view once.
+- Approval: product choice (phone takeover link; no solving or evasion) from the user on
+  2026-10-25; recorded with increment 0 on 2026-10-25. Implemented in increment 4 on
+  2026-10-25; live phone-login verification remains pending.
+
+## D048: Browser task execution details for the Reddit comment path
+
+Date: 2026-10-25 | Status: accepted | Phase: [05](phases/05-telegram-agent-browser-actions.md)
+- Context: increment 3 wires D042/D043 into a real job. Several details were left open by the
+  proposal: how the per-step deadline is enforced, what a crash in the click window means, which
+  window bounds the approval page hold, and how a result card offers recovery.
+- Choice and reason:
+  - **Per-step deadline via the SDK.** The agent passes `timeout: { stepMs: AGENT_STEP_TIMEOUT_MS }`
+    to the AI SDK and an abort signal combining worker shutdown and task cancellation. The installed
+    SDK already enforces a per-step deadline this way; folding a fixed timeout into the run signal
+    (as the proposal wording suggested) would bound the whole multi-step run instead.
+  - **Recovery outcomes.** A send tool call still `running` at startup becomes `unknown` and the
+    task `outcome_unknown`. A `succeeded` send call becomes `unverified`, not `succeeded`, because
+    the deterministic verification result was not persisted before the crash. A `failed` or missing
+    call ends `failed(interrupted)` and the approval stays consumed. Every affected task gets one
+    `browser:task:<id>:recovered` notice.
+  - **Approval hold.** Expiry is `BROWSER_APPROVAL_TIMEOUT_MINUTES` (default 30). v1 has no separate
+    approval-TTL setting, so the `min(ttl, timeout)` wording collapses to this value. Approve and
+    deny require an unexpired approval; expiry is a conditional system update, and losing that race
+    re-reads an approved row and executes it.
+  - **Result-card buttons.** [Retry] for failed, unverified, and unknown outcomes; [Open browser]
+    for unknown, unverified, and login-blocked failures. A retry always creates a new task and
+    approval; nothing is reset or re-clicked.
+- Alternative: retry the same task/approval after a precondition failure; rejected because D008
+  makes `approvals.payload` single-use and an uncertain submit must never be retried silently.
+  Treating a recovered `succeeded` send as success; rejected because the post-submit check cannot be
+  replayed deterministically.
+- Consequence: an interrupted execution may be reported `unverified` even when the comment posted;
+  the card tells the user to check the browser before retrying. Live per-task cost remains unknown
+  until a model is chosen and the Reddit login is in place.
+- Approval: increment 3 implementation approval from the user on 2026-10-25 ("Implement the
+  Increment 3 — Reddit comment end to end").
+
+
+## D049: Handoff resolution and model deadlines
+
+Date: 2026-10-25 | Status: accepted | Phase: [05](phases/05-telegram-agent-browser-actions.md)
+- Context: increment 4 pauses inside browser tools for up to 15 minutes. Inspection of the
+  installed AI SDK shows that `timeout.stepMs` also covers tool execution and leaves the step
+  signal aborted after a long human wait, preventing the next model step.
+- Choice and reason: apply `AGENT_STEP_TIMEOUT_MS` to each model request through a model wrapper,
+  while human and approval waits keep their own deadlines and shutdown/cancellation handling.
+  This revises D048's per-step deadline choice. Serialize browser tools so a batch cannot operate
+  on the page during a handoff, and stop the loop on a terminal handoff outcome.
+  Done resolves only its unexpired, waiting handoff from the linked delivered card; the job
+  then resumes the task and re-snapshots. Stop, timeout, and shutdown close both task and
+  handoff; a repeated blocked observation creates a new handoff up to the existing three limit.
+- Alternative: enlarge the SDK step timeout to include the human wait; rejected because it
+  weakens the model deadline and still couples separate waits.
+- Consequence: Done does not assert that a challenge was solved. Deterministic detectors must
+  check the new page before the agent continues. No schema or dependency changes are needed.
+- Approval: increment 4 implementation request from the user on 2026-10-25.
+
+
+## D050: Persist intake decisions and gate stale requests before browser work
+
+Date: 2026-10-25 | Status: accepted | Phase: [05](phases/05-telegram-agent-browser-actions.md)
+- Context: increment 5 adds structured free-text intake, replay confirmation, deferred schedules,
+  and multi-field Reddit posts. Retried intake must not change pinned text or start old requests.
+- Choice and reason: save a versioned intake decision in the inbound message's JSON payload,
+  serialized by its row lock. The parser sees only the bounded current message and a static
+  supported-action catalog, through `createBudgetedModel` (`agent_intake`, no tools/retries).
+  Preserve reply ids for traceability; do not include quoted messages or conversation history.
+  Keep the intake run id with the decision so browser preparation counts that run’s actual or
+  reserved cost in the same per-task cap; daily accounting continues across all `agent_*` calls.
+  Validate supported actions/targets/field sets and exact substrings for `user_verbatim`.
+  Invalid, ambiguous, or failed parses produce a bounded clarification/unavailability notice.
+  AI SDK error classification keeps fixed messages/status/request ids in audit rows and omits
+  raw provider error messages, which can echo the request or generated text.
+  Schedules stay in `browserScheduleDraft` metadata with no browser task or active schedule.
+- A stale request (missing or older-than-ten-minute Telegram date) creates a queued task with
+  `status_reason = 'confirmation_required'` and an expiring `browserTaskDraft` outbox card. This task
+  cannot claim the browser until a validated Start clears the gate; cancelling closes it.
+  Enqueue before clearing the gate under the task lock: a queue failure rolls back Start,
+  while duplicate jobs no-op on the task row. Successful replayed Starts are acknowledged as stale.
+- Reddit text posts pin the subreddit in the canonical `/r/<sub>/submit` target and title/body
+  in the spec. Approval checks the target community, distinct fields, and exact read-back; execution
+  repeats target checks and verification only accepts a result in the requested subreddit.
+  All field values must fit one complete Telegram approval card; oversize combined text asks
+  for shortening rather than truncating approved text. The subreddit is shown explicitly.
+- Alternative: add draft/schedule tables now or reconstruct decisions on every retry. Rejected
+  because the existing message payload and queued status suffice; active schedules remain increment 7.
+- Consequence: no migration or dependency change. An intake error is retained as a notice;
+  resend the request to try again. A stale draft expires after 30 minutes. Schedule drafts
+  are inert until increment 7. Post title is capped at 300 characters, body at the v1 field cap,
+  and the complete approval card at the existing Telegram card limit.
+- Approval: user's increment 5 implementation request on 2026-10-25.
+
+
+## D051: Profile-backed application notes and pinned job identity
+
+Date: 2026-10-25 | Status: accepted | Phase: [05](phases/05-telegram-agent-browser-actions.md)
+- Context: increment 6 adds short job notes. A prompt alone cannot prove that an untrusted job
+  page did not introduce unsupported applicant claims, and the same site hosts many job targets.
+- Choice and reason: store a bounded applicant profile as complete first-person facts, one per
+  line. One budgeted `agent_compose_text` call selects indexes of up to three whole facts from a
+  bounded untrusted job excerpt. Deterministic code preserves their original order and wording,
+  including negations, and adds a fixed greeting/closing. It rejects extra output keys, invalid
+  or duplicate indexes, and notes over 1500 characters. Generated note fields are always drafted.
+  Exact supplied notes remain verbatim. Profile changes never rewrite an already prepared task.
+- A pending spec carries `composeNote: true` and empty fields; it cannot fill or approve. The
+  first unblocked observation of the requested job composes and persists the prepared spec before
+  any fill. Browser and compose calls share the run/task cap and intake cost. Failed composition
+  stops the task, with no automatic retry or private prompt text in errors/audit.
+- Application approval/execution checks the exact origin and numeric job identity (allowing only
+  the same job's slug and optional apply path). Apply may open a form once, only before a note
+  editor is visible; Send always needs approval. Exact applied statuses stop with a read-only
+  `failed(already_applied)` result and no Retry button. Success requires the same job, an absent
+  editor, and an exact success hint; uncertain evidence stays unverified.
+- Alternative: free-form note generation with a second model fact-check; rejected because it
+  adds cost and still cannot deterministically rule out unsupported claims. A new reported task
+  status/table; unnecessary for a no-submit precondition result. Resume uploads and longer forms
+  remain excluded from this increment.
+- Consequence: notes select relevant supplied facts rather than paraphrasing them. Users should
+  write complete self-contained first-person profile lines. Site matchers fail closed and need
+  logged-in live verification; official Wellfound help confirms the Apply → note → Send flow.
+- Approval: user's "Implement the increment 6" request on 2026-10-25.
+
+
+## D052: Durable schedule slots, bounded operations and artifact retention
+
+Date: 2026-10-25 | Status: accepted | Phase: [05](phases/05-telegram-agent-browser-actions.md)
+- Context: increment 7 activates recurring browser work and adds operational controls. A tick
+  must neither lose a task between SQL and queue commits nor replay a stale schedule Save.
+- Choice and reason: five-field numeric cron in Asia/Kolkata, with one resolved minute value,
+  guarantees at least one hour between occurrences. Draft cards show three upcoming times and
+  expire after 30 minutes. Save/Cancel validates the delivered card and locks the source message;
+  a unique source-message key and a persisted resolution make taps single-use. Save recomputes
+  the next time from the current instant. Disabling affects future slots, leaving existing tasks
+  explicit to the user through /tasks and /stop.
+- Each tick locks due schedules, inserts one task per (schedule_id, scheduled_for), queues it
+  through pg-boss's public fromDrizzle adapter and advances the cursor in the same transaction.
+  An occurrence more than 30 minutes late is skipped with one deduplicated notice; the cursor
+  advances directly to the next future occurrence instead of replaying a downtime backlog. Only
+  the latest due slot inside the grace window is retained; queued tasks repeat the lateness check
+  before connecting and fail as schedule_missed when overdue.
+  Scheduled submits reuse the existing approval flow. Startup also re-enqueues ungated queued
+  tasks; task-row claims make duplicate orchestration jobs harmless.
+- The paired schedule-id/time check requires restricting deletion of schedules with task history;
+  an id-only SET NULL would violate it. Disabling is the supported operation.
+- /tasks and /schedules use bounded pages with stored ids for callback validation. /stop cancels
+  the active task; a click already executing is allowed to finish. Details/heartbeat expose only
+  counts, budget totals/reservations and a bounded loopback CDP reachability result, never URLs,
+  task text, profile data or raw probe errors. Operational jobs share system runs, so last-heartbeat
+  queries additionally filter the heartbeat job name.
+- Retention deletes screenshots older than 14 days then tombstones their rows; missing files
+  still tombstone, other errors leave rows retryable. Storage and deletion share a per-hash
+  transaction advisory lock. Re-storing identical bytes refreshes their retention timestamp,
+  preventing deletion/revival races. No pg-boss tables are modeled or migrated.
+- Alternative: commit SQL then enqueue separately; rejected because crashes can lose the queue
+  nudge. In-memory cron/callback state; rejected because restart and replay must be durable.
+  Multiple-minute cron or catch-up replay; excluded by the agreed frequency/missed-run policy.
+- Approval: user's request to implement increment 7 on 2026-10-25. Credential setup and real-site
+  checks are explicitly left for the following session, without recording them as passed.
+
+
+## D053: Observe an active CAPTCHA instead of inferring one from frame presence
+
+Date: 2026-10-25 | Status: accepted | Phase: [05 live fix 1](phases/05-telegram-agent-browser-actions.md)
+- Context: the first live Reddit prepare/Cancel check paused on a normal page. A synthetic
+  normal thread with an invisible reCAPTCHA anchor reproduces the same automatic handoff.
+  The current detector checks every frame URL with no presentation evidence.
+- Choice: add bounded frame visibility/state metadata to the browser seam and use it
+  consistently before agent continuation and before submitting. Hidden/background widgets alone
+  do not request human help. Visible challenge UI and explicit verification/login/2FA markers
+  keep their manual handoff behavior; observation errors remain conservative. Observation is
+  capped at 64 frames and an action deadline. Only the specific reCAPTCHA anchor checkbox can
+  signal completion; image-challenge tile checkboxes are never accepted as completion.
+- Alternative: ignore every reCAPTCHA URL containing size=invisible. Insufficient alone because
+  a background widget can later open a real visible challenge; inspect the presented UI too.
+- Consequence: driver/fake observations and detector tests change, with no schema/dependencies,
+  no CAPTCHA-solving actions and no change to exact-text approval or deterministic submission.
+- Approval: "Okkay go ahead and fix the bug" on 2026-10-25.
+
+
+## D054: List task controls past a cut snapshot
+
+Date: 2026-10-25 | Status: accepted | Phase: [05 live fix 2](phases/05-telegram-agent-browser-actions.md)
+- Context: a live Reddit comment task hit the step limit after repeated scrolls. Reddit thread
+  snapshots run to ~200k characters; the composer editor and Comment button sit past the
+  12,000-character bound, which is cut in DOM order, so scrolling never changes what the model sees.
+- Choice: a cut snapshot carries a notice that scrolling does not move the cut, plus a bounded,
+  untrusted list (at most 20, generation-qualified refs) of the action's field inputs, commit
+  control and pre-commit openers found past the cut, chosen from the site registry. Refs keep
+  resolving against the full snapshot; guards, approval and execution are unchanged.
+- Alternative: raise the bound (costly per step and still fails on longer pages); viewport-only
+  snapshots (Playwright has no viewport aria mode, and refs must stay stable); a model-driven find
+  tool (more steps and free-text queries over untrusted content).
+- Consequence: snapshot text gains at most a few hundred characters on cut pages; no schema,
+  dependency or model changes.
+- Approval: "Go ahead and fix the bug" on 2026-10-25.
+
+
+## D055: Thread-aware Reddit drafting with one optional Telegram clarification
+
+Date: 2026-10-26 | Status: accepted | Phase: [05 increment 8](phases/05-telegram-agent-browser-actions.md)
+- Approval: explicit implementation request on 2026-10-26 after the proposed plan.
+- Choice: `/comment` now treats optional trailing text as thoughts. Pending composition
+  lives in the existing task JSON; old prepared fields retain their exact provenance.
+  Read only the requested primary post, compose with `createBudgetedModel` without tools,
+  pin the draft before fill, and reuse immutable approval/model-free single-click execution.
+- Voice: short casual English, lowercase sentence starts, natural abbreviations, usually
+  1–3 sentences and at most 800 characters; preserve supplied views without invented experience.
+- Clarification: at most one brief question. Atomically queue its notification and set
+  `queued/advice_required`, releasing the browser. Only a reply to a delivered question
+  from the same chat can resume it once; old replies require Start. Re-read the post and
+  include earlier preparation-run costs in the same task cap. No automatic question expiry.
+- Consequence: every comment remains explicitly approved; post identity and top-level
+  composer ownership are checked before fill, approval and execution. Page content is
+  untrusted and never copied into logs/audit payloads.
+- Alternative: draft at intake without reading the thread, or hold the browser during an
+  advice wait; rejected for missing context and unnecessarily blocking other tasks.
+- Revisits D046 only for new `/comment` commands; existing exact-text requests and saved
+  tasks keep their semantics. No new schema or dependencies.

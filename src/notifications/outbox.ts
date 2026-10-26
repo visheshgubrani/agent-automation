@@ -12,6 +12,35 @@ export type NotificationChannel = (typeof notificationChannel.enumValues)[number
 export type DeliveryPolicy = (typeof notificationDeliveryPolicy.enumValues)[number]
 export type NotificationRow = typeof notificationOutbox.$inferSelect
 
+/**
+ * Outbox payload v1 photo reference (D045). The dispatcher sends the image as a caption when
+ * the artifact row exists, its sha256 matches, and the body fits Telegram's caption limit;
+ * otherwise the same row is delivered as plain text.
+ */
+export interface OutboxPhoto {
+  artifactId: string
+  sha256: string
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const SHA256_PATTERN = /^[0-9a-f]{64}$/
+
+/** Read and validate the optional `photo` object from an outbox payload. */
+export function parseOutboxPhoto(
+  payload: Record<string, unknown> | null | undefined,
+): OutboxPhoto | undefined {
+  const value = payload?.photo
+  if (value === null || typeof value !== 'object') return undefined
+  const candidate = value as { artifactId?: unknown; sha256?: unknown }
+  if (typeof candidate.artifactId !== 'string' || !UUID_PATTERN.test(candidate.artifactId)) {
+    return undefined
+  }
+  if (typeof candidate.sha256 !== 'string' || !SHA256_PATTERN.test(candidate.sha256)) {
+    return undefined
+  }
+  return { artifactId: candidate.artifactId, sha256: candidate.sha256 }
+}
+
 /** A row fails permanently after this many send attempts (5th failed attempt, both policies). */
 export const MAX_SEND_ATTEMPTS = 5
 

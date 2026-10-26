@@ -13,6 +13,7 @@ const JOB_ID = '11111111-2222-4333-8444-555555555555'
 const okSender: TelegramSender = {
   chatId: 42,
   send: async () => ({ messageId: 7 }),
+  sendPhoto: async () => ({ messageId: 8 }),
 }
 
 beforeEach(truncateAllTables)

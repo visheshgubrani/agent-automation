@@ -42,6 +42,7 @@ function senderFor(
         sends.push(text)
         return behavior(text, call)
       },
+      sendPhoto: async () => ({ messageId: 0 }),
     },
   }
 }
@@ -153,6 +154,7 @@ describe('dispatchPendingNotifications', () => {
         calls.push({ text, ...(options?.buttons ? { buttons: options.buttons } : {}) })
         return { messageId: calls.length }
       },
+      sendPhoto: async () => ({ messageId: 0 }),
     }
 
     const counters = await dispatchPendingNotifications({ db, sender })
@@ -300,6 +302,7 @@ describe('dispatchPendingNotifications', () => {
         }
         return { messageId: call }
       },
+      sendPhoto: async () => ({ messageId: 0 }),
     }
 
     const counters = await dispatchPendingNotifications({ db, sender, signal: controller.signal })
@@ -382,5 +385,126 @@ describe('runDispatchTick run gating', () => {
     const all = chunks.join('')
     expect(all).not.toContain('SECRET-BODY-XYZ')
     expect(all).toContain('"claimed":1')
+  })
+})
+
+describe('photo notifications', () => {
+  const ARTIFACT_ID = 'c0ffee00-3333-4333-8333-333333333333'
+  const SHA256 = 'a'.repeat(64)
+
+  function photoSender() {
+    const texts: string[] = []
+    const photos: { caption: string; bytes: Uint8Array }[] = []
+    const sender: TelegramSender = {
+      chatId: 42,
+      send: async (text) => {
+        texts.push(text)
+        return { messageId: 300 + texts.length }
+      },
+      sendPhoto: async (photo, caption) => {
+        photos.push({ caption, bytes: photo })
+        return { messageId: 400 + photos.length }
+      },
+    }
+    return { sender, texts, photos }
+  }
+
+  async function photoRow(dedupeKey: string, body: string): Promise<string> {
+    const { notification } = await enqueueNotification(db, {
+      kind: 'system',
+      dedupeKey,
+      body,
+      payload: { photo: { artifactId: ARTIFACT_ID, sha256: SHA256 } },
+      scheduledFor: PAST,
+    })
+    return notification.id
+  }
+
+  it('sends the screenshot with the body as its caption', async () => {
+    const id = await photoRow('system:photo-ok', 'Task #abcd — Reddit comment')
+    const { sender, texts, photos } = photoSender()
+    const loaded: string[] = []
+
+    const counters = await dispatchPendingNotifications({
+      db,
+      sender,
+      loadPhoto: async (photo) => {
+        loaded.push(photo.artifactId)
+        return new Uint8Array([1, 2, 3])
+      },
+    })
+
+    expect(counters).toMatchObject({ claimed: 1, sent: 1 })
+    expect(loaded).toEqual([ARTIFACT_ID])
+    expect(texts).toEqual([])
+    expect(photos).toEqual([
+      { caption: 'Task #abcd — Reddit comment', bytes: new Uint8Array([1, 2, 3]) },
+    ])
+    const row = await rowById(id)
+    expect(row.status).toBe('sent')
+    expect(row.telegramMessageId).toBe(401)
+  })
+
+  it('falls back to text when the artifact is missing or loading throws', async () => {
+    await photoRow('system:photo-missing', 'missing artifact')
+    await photoRow('system:photo-error', 'unreadable artifact')
+    const { sender, texts, photos } = photoSender()
+
+    const counters = await dispatchPendingNotifications({
+      db,
+      sender,
+      loadPhoto: async (photo) => {
+        if (photo.artifactId === ARTIFACT_ID) {
+          throw new Error('disk on fire')
+        }
+        return undefined
+      },
+    })
+
+    expect(counters).toMatchObject({ claimed: 2, sent: 2 })
+    expect(photos).toEqual([])
+    expect(texts).toEqual(['missing artifact', 'unreadable artifact'])
+  })
+
+  it('sends text instead of a caption that would exceed the Telegram limit', async () => {
+    const body = `caption too long: ${'x'.repeat(1_100)}`
+    await photoRow('system:photo-long', body)
+    const { sender, texts, photos } = photoSender()
+    let loaded = 0
+
+    const counters = await dispatchPendingNotifications({
+      db,
+      sender,
+      loadPhoto: async () => {
+        loaded += 1
+        return new Uint8Array([9])
+      },
+    })
+
+    expect(counters).toMatchObject({ claimed: 1, sent: 1 })
+    expect(loaded).toBe(0)
+    expect(photos).toEqual([])
+    expect(texts).toEqual([body])
+  })
+
+  it('ignores a malformed photo payload and delivers text', async () => {
+    const { notification } = await enqueueNotification(db, {
+      kind: 'system',
+      dedupeKey: 'system:photo-bad',
+      body: 'bad photo payload',
+      payload: { photo: { artifactId: 'not-a-uuid', sha256: SHA256 } },
+      scheduledFor: PAST,
+    })
+    const { sender, texts, photos } = photoSender()
+
+    await dispatchPendingNotifications({
+      db,
+      sender,
+      loadPhoto: async () => new Uint8Array([1]),
+    })
+
+    expect(photos).toEqual([])
+    expect(texts).toEqual(['bad photo payload'])
+    expect((await rowById(notification.id)).status).toBe('sent')
   })
 })

@@ -12,6 +12,12 @@ export interface CreateTelegramBotOptions {
   chatId: number
   db?: Db
   log?: Logger
+  /** pg-boss send for agent jobs; absent when the browser agent is disabled. */
+  enqueue?: (queue: string, data: Record<string, unknown>) => Promise<void>
+  /** Dispatch nudge after an approval/stop/retry callback commits a card. */
+  nudgeDispatch?: () => Promise<void>
+  /** Browser view URL used by result-card buttons. */
+  browserViewUrl?: string
 }
 
 export interface TelegramBotHandle {
@@ -49,6 +55,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         chatId: options.chatId,
         db,
         log,
+        ...(options.enqueue !== undefined ? { enqueue: options.enqueue } : {}),
+        ...(options.nudgeDispatch !== undefined ? { nudgeDispatch: options.nudgeDispatch } : {}),
+        ...(options.browserViewUrl !== undefined ? { browserViewUrl: options.browserViewUrl } : {}),
         reply: async (text, replyOptions) => {
           const message = await ctx.reply(
             text,

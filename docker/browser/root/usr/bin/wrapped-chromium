@@ -1,0 +1,22 @@
+#!/bin/bash
+# Launcher for the agent browser. Keep this list short and honest (D041, D047): no stealth,
+# fingerprint, or automation-hiding flags. --no-sandbox is required inside the container.
+PROFILE_DIR=/config/agent-profile
+
+if ! pgrep -x chromium > /dev/null; then
+  rm -f "${PROFILE_DIR}"/Singleton*
+fi
+
+if [ "${PIXELFLUX_WAYLAND,,}" == "true" ]; then
+  WAYLAND="--ozone-platform=wayland"
+fi
+
+exec /usr/bin/chromium \
+  --no-sandbox \
+  --password-store=basic \
+  --start-maximized \
+  --no-first-run \
+  --user-data-dir="${PROFILE_DIR}" \
+  --remote-debugging-port=9223 \
+  ${WAYLAND} \
+  "$@" > /dev/null 2>&1

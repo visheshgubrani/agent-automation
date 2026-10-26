@@ -1,7 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import { ConfigError, requireGmailConnectConfig, requireWorkerConfig } from '../src/config.js'
+import {
+  ConfigError,
+  requireBrowserCheckConfig,
+  requireGmailConnectConfig,
+  requireWorkerConfig,
+} from '../src/config.js'
 import { parseKeyRing } from '../src/crypto/keys.js'
 import {
+  DEFAULT_AGENT_MAX_OUTPUT_TOKENS,
+  DEFAULT_AGENT_MAX_STEPS,
+  DEFAULT_AGENT_REASONING_EFFORT,
+  DEFAULT_AGENT_STEP_TIMEOUT_MS,
+  DEFAULT_BROWSER_APPROVAL_TIMEOUT_MINUTES,
+  DEFAULT_BROWSER_CDP_URL,
+  DEFAULT_BROWSER_HANDOFF_TIMEOUT_MINUTES,
   DEFAULT_GMAIL_REQUEST_DELAY_MS,
   DEFAULT_HEARTBEAT_CRON,
   DEFAULT_MAIL_MAX_INPUT_CHARS,
@@ -417,5 +429,155 @@ describe('requireGmailConnectConfig', () => {
     expect(error?.issues).toHaveLength(1)
     expect(error?.message).toContain('not valid base64')
     expect(error?.message).not.toContain(KEY)
+  })
+})
+
+describe('agent configuration', () => {
+  const agentEnv = (overrides: Record<string, string | undefined> = {}) =>
+    workerEnv({
+      AGENT_ENABLED: 'true',
+      OPENAI_API_KEY: 'sk-test',
+      AGENT_MODEL: DEFAULT_MAIL_MODEL,
+      AGENT_TASK_MAX_USD: '0.10',
+      BROWSER_VIEW_URL: 'https://browser.tailnet-abc.ts.net/',
+      ARTIFACT_DIR: '/var/lib/agent-automation/artifacts',
+      ...overrides,
+    })
+
+  it('leaves the heartbeat-only and mail-only worker paths unchanged when disabled', () => {
+    const env = parse()
+    expect(env.AGENT_ENABLED).toBe(false)
+    expect(env.AGENT_MODEL).toBeUndefined()
+    expect(env.BROWSER_CDP_URL).toBe(DEFAULT_BROWSER_CDP_URL)
+
+    expect(requireWorkerConfig(workerEnv()).agent).toBeUndefined()
+    // Invalid agent-only values are ignored while the agent is disabled.
+    const mailOnly = requireWorkerConfig(
+      workerEnv({
+        MAIL_ENABLED: 'true',
+        GMAIL_CLIENT_ID: 'client-id',
+        GMAIL_CLIENT_SECRET: 'client-secret',
+        OPENAI_API_KEY: 'sk-test',
+        BROWSER_CDP_URL: 'http://10.0.0.5:9222',
+        BROWSER_VIEW_URL: 'http://example.com',
+      }),
+    )
+    expect(mailOnly.mail).toBeDefined()
+    expect(mailOnly.agent).toBeUndefined()
+  })
+
+  it('returns validated agent config with defaults', () => {
+    const config = requireWorkerConfig(agentEnv())
+    expect(config.agent).toEqual({
+      openaiApiKey: 'sk-test',
+      model: DEFAULT_MAIL_MODEL,
+      reasoningEffort: DEFAULT_AGENT_REASONING_EFFORT,
+      maxSteps: DEFAULT_AGENT_MAX_STEPS,
+      maxOutputTokens: DEFAULT_AGENT_MAX_OUTPUT_TOKENS,
+      stepTimeoutMs: DEFAULT_AGENT_STEP_TIMEOUT_MS,
+      taskMaxUsd: 0.1,
+      browser: {
+        cdpUrl: DEFAULT_BROWSER_CDP_URL,
+        viewUrl: 'https://browser.tailnet-abc.ts.net/',
+        artifactDir: '/var/lib/agent-automation/artifacts',
+        handoffTimeoutMinutes: DEFAULT_BROWSER_HANDOFF_TIMEOUT_MINUTES,
+        approvalTimeoutMinutes: DEFAULT_BROWSER_APPROVAL_TIMEOUT_MINUTES,
+      },
+    })
+    expect(config.mail).toBeUndefined()
+  })
+
+  it('collects every missing agent value into one ConfigError, even with mail off', () => {
+    const error = configError(workerEnv({ AGENT_ENABLED: 'true' }))
+    expect(error.issues).toEqual([
+      'OPENAI_API_KEY is required when AGENT_ENABLED=true',
+      'AGENT_MODEL is required when AGENT_ENABLED=true',
+      'AGENT_TASK_MAX_USD is required when AGENT_ENABLED=true',
+      'BROWSER_VIEW_URL is required when AGENT_ENABLED=true',
+      'ARTIFACT_DIR is required when AGENT_ENABLED=true',
+    ])
+  })
+
+  it('collects agent and mail problems together', () => {
+    const error = configError(workerEnv({ AGENT_ENABLED: 'true', MAIL_ENABLED: 'true' }))
+    expect(error.issues).toEqual(
+      expect.arrayContaining([
+        'GMAIL_CLIENT_ID is required when MAIL_ENABLED=true',
+        'OPENAI_API_KEY is required when MAIL_ENABLED=true',
+        'OPENAI_API_KEY is required when AGENT_ENABLED=true',
+        'AGENT_MODEL is required when AGENT_ENABLED=true',
+      ]),
+    )
+  })
+
+  it('rejects an unpriced agent model and a relative artifact directory', () => {
+    const error = configError(agentEnv({ AGENT_MODEL: 'gpt-unpriced', ARTIFACT_DIR: 'artifacts' }))
+    expect(error.issues).toEqual([
+      'AGENT_MODEL "gpt-unpriced" has no configured pricing snapshot',
+      'ARTIFACT_DIR must be an absolute path',
+    ])
+  })
+
+  it('keeps CDP on loopback', () => {
+    for (const cdp of ['http://127.0.0.1:9222', 'ws://localhost:9222', 'http://[::1]:9222']) {
+      expect(requireWorkerConfig(agentEnv({ BROWSER_CDP_URL: cdp })).agent?.browser.cdpUrl).toBe(
+        cdp,
+      )
+    }
+    for (const cdp of [
+      'http://0.0.0.0:9222',
+      'http://192.168.1.10:9222',
+      'http://browser.tailnet-abc.ts.net:9222',
+      'ftp://127.0.0.1:9222',
+      'http://user:pass@127.0.0.1:9222',
+      'not a url',
+    ]) {
+      const error = configError(agentEnv({ BROWSER_CDP_URL: cdp }))
+      expect(error.issues).toHaveLength(1)
+      expect(error.issues[0]).toMatch(/^BROWSER_CDP_URL /)
+    }
+  })
+
+  it('requires an https *.ts.net view URL without credentials', () => {
+    for (const view of [
+      'http://browser.tailnet-abc.ts.net/',
+      'https://example.com/',
+      'https://user:pw@browser.tailnet-abc.ts.net/',
+      'https://browser.tailnet-abc.ts.net/?password=hunter2',
+      'https://browser.tailnet-abc.ts.net/#token=abc',
+    ]) {
+      const error = configError(agentEnv({ BROWSER_VIEW_URL: view }))
+      expect(error.issues).toHaveLength(1)
+      expect(error.issues[0]).toMatch(/^BROWSER_VIEW_URL must /)
+      expect(error.message).not.toContain('hunter2')
+    }
+    const ok = requireWorkerConfig(
+      agentEnv({ BROWSER_VIEW_URL: 'https://browser.tailnet-abc.ts.net/?autoconnect=1' }),
+    )
+    expect(ok.agent?.browser.viewUrl).toBe('https://browser.tailnet-abc.ts.net/?autoconnect=1')
+  })
+
+  it('validates agent bounds in the base env', () => {
+    expect(parseError({ DATABASE_URL, AGENT_TASK_MAX_USD: '0' })).toContain('AGENT_TASK_MAX_USD')
+    expect(parseError({ DATABASE_URL, AGENT_MAX_STEPS: '0' })).toContain('AGENT_MAX_STEPS')
+    expect(parseError({ DATABASE_URL, AGENT_REASONING_EFFORT: 'low' })).toContain(
+      'AGENT_REASONING_EFFORT',
+    )
+  })
+})
+
+describe('requireBrowserCheckConfig', () => {
+  it('needs only a loopback CDP URL and an optional absolute artifact directory', () => {
+    expect(requireBrowserCheckConfig(parse())).toEqual({ cdpUrl: DEFAULT_BROWSER_CDP_URL })
+    expect(requireBrowserCheckConfig(parse({ ARTIFACT_DIR: '/tmp/artifacts' }))).toEqual({
+      cdpUrl: DEFAULT_BROWSER_CDP_URL,
+      artifactDir: '/tmp/artifacts',
+    })
+    expect(() =>
+      requireBrowserCheckConfig(parse({ BROWSER_CDP_URL: 'http://10.1.1.1:9222' })),
+    ).toThrow(ConfigError)
+    expect(() => requireBrowserCheckConfig(parse({ ARTIFACT_DIR: 'relative' }))).toThrow(
+      'ARTIFACT_DIR must be an absolute path',
+    )
   })
 })
