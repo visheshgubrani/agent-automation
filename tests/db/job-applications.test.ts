@@ -73,6 +73,7 @@ async function startApplication(
     profile?: boolean
     selection?: unknown
     zeroNoteBudget?: boolean
+    stepPolicy?: 'rules'
   } = {},
 ) {
   const artifactDir = await mkdtemp(join(tmpdir(), 'application-job-'))
@@ -92,6 +93,7 @@ async function startApplication(
       handoffTimeoutMinutes: 15,
       approvalTimeoutMinutes: 30,
     },
+    ...(options.stepPolicy ? { stepPolicy: options.stepPolicy } : {}),
   }
   if (options.profile !== false) await setApplicantProfile(db, PROFILE)
   const boss = { send: async () => 'job-id' } as unknown as PgBoss
@@ -285,6 +287,36 @@ describe.each(sites)('$site short-note applications', (site) => {
           })
         ).runOpened,
       ).toBe(false)
+    } finally {
+      h.controller.abort()
+      await h.promise
+    }
+  })
+  it('the rules policy drafts once, opens Apply once and reaches approval with no step-model call', async () => {
+    const h = await startApplication(site, { stepPolicy: 'rules' })
+    try {
+      await waitUntil(async () => (await db.select().from(approvals)).length === 1)
+      const [approval] = await db.select().from(approvals)
+      if (!approval) throw new Error('missing approval')
+      expect(approval.payload).toMatchObject({
+        fields: [
+          {
+            key: 'application_note',
+            value: noteFromSelection(PROFILE, { factIndexes: [0, 1] }),
+          },
+        ],
+      })
+      expect(h.composeCalls()).toBe(1)
+      expect(h.page.actions.filter((action) => action.type === 'click')).toEqual([
+        { type: 'click', ref: 'e8' },
+      ])
+      const steps = await db
+        .select()
+        .from(llmCalls)
+        .where(eq(llmCalls.purpose, 'agent_browser_step'))
+      expect(steps).toHaveLength(0)
+      await approveApproval(db, { approvalId: approval.id, resolverRef: 'test' })
+      expect(await h.promise).toMatchObject({ status: 'succeeded' })
     } finally {
       h.controller.abort()
       await h.promise

@@ -1426,3 +1426,96 @@ Verification and outcome:
 - Still open: send `/comment <owned/test-thread-url>` and the thoughts variant in Telegram,
   review the real model’s tone, try Cancel, then approve one real comment and verify it.
   No real comment was submitted by this implementation run.
+
+## Increment 9 — Rule-based fast path before the model loop (2026-10-28)
+
+Status: in_progress — implementation and automated verification complete; the live baseline and
+rules comparison are pending. Approved by the user on 2026-10-28 ("Rule-based fast path first")
+after research into TypeSafe's Jev (D056).
+Goal: reach the approval card for the common cases without step-model calls, keeping every
+guard, the exact-text approval and the model-free executor. Opt-in with `AGENT_STEP_POLICY=rules`;
+the default `llm` path is unchanged.
+
+- [x] `AGENT_STEP_POLICY` (`llm` | `rules`) in env, `AgentConfig` and `.env.example`.
+- [x] Pure rules (`src/agent/fast-path-rules.ts`): fill on one match, open once, approve from a
+      fresh snapshot, and hand off on ambiguity or no progress.
+- [x] Runner (`src/agent/fast-path.ts`) through `BrowserToolbox` only, plus a read-only,
+      audited `composer_check` for Reddit comment candidates. Value-free trail and reason codes.
+- [x] One-way handoff to `runBrowserAgent` with a resume prompt on the same page and toolbox.
+- [x] Tests: pure rules, DB-backed runner and fallback, the rules policy end to end for Reddit
+      comments and both application sites, and a gated real-Chromium composer fixture.
+- [ ] Baseline: re-measure the current `llm` path. Run 1–2 live prepare/Cancel tasks each for
+      `reddit_comment`, `waas_apply` and `wellfound_apply`, recording steps, summed
+      `agent_browser_step` latency, run start to approval, and whether approval was reached.
+      `reddit_comment` done on 2026-10-29 (D058); `waas_apply` and `wellfound_apply` pending.
+- [ ] The same tasks with `AGENT_STEP_POLICY=rules`, comparing handoff reasons. Keep the option
+      only with zero wrong-target approvals and an approval rate no worse than `llm`.
+      `reddit_comment` done on 2026-10-29: 2/2 approvals under each policy, none wrong-target,
+      and `rules` needed no browser-model calls (D058). The application sites are pending.
+
+Exclusions: Jev or any other decision model, a default change, splitting `browser-task.ts`,
+search/navigation/key presses in the fast path, schema, dependency, budget, approval and executor
+changes.
+
+Verification and outcome:
+
+- `pnpm exec tsc --noEmit` and `pnpm build` passed.
+- `pnpm test`: 73 files and 665 tests passed. 6 tests were skipped, including the new gated
+  real-Chromium fixture, because no CDP browser was running. Rerun it with
+  `BROWSER_TEST_CDP_URL`.
+- `pnpm lint`: application code is clean. Its only errors are the 5 existing ones under the
+  untracked `.scratch/watermarks-remover`.
+- See D056 for the research, the invalid 2026-10-25 baseline, and the criteria for revisiting Jev.
+
+## Increment 10 — OpenAI Decisions browser controller (2026-10-28)
+
+Status: removed 2026-10-29 (D059) — the paid evaluation failed its gate, and the user approved
+removal. The task-state/session extraction and the rules fast path in `browser-controller.ts`
+remain. Originally approved by the user on 2026-10-28
+("implement P05-T01..P05-T07", continue on top of increment-9 work).
+Goal: use fast typed Decisions calls where rules cannot choose, retaining Responses for drafting
+and difficult cases. Opt-in with `AGENT_STEP_POLICY=decisions`; defaults stay `llm`.
+
+- [x] Shared task-state/session extraction (`browser-task-state`, `browser-task-session`).
+- [x] Budgeted Decisions access (direct `decisionModel('gpt-6-luna')`, `api: 'decisions'`
+      pricing, shared admission/serialization, `agent_browser_decision` audit).
+- [x] Pure operation choices with 64-choice/32k bounds and 0.90/0.20 acceptance gate.
+- [x] Shared preparation core (rules → Decisions → one Responses fallback, shared step
+      budget, stale/refusal recovery) with `maxSteps` override for the fallback.
+- [x] Opt-in wiring; `fast-path.ts` runner moved into the controller and deleted.
+- [x] Fixed synthetic evaluation (`pnpm agent:decisions:evaluate`) with mocked harness tests.
+- [x] Paid evaluation (`pnpm agent:decisions:evaluate` with real key/DB/budgets), run on
+      2026-10-29. It failed: 1/9 ok, and all 8 model calls fell below the 0.90 gate (top
+      choice 0.35–0.72). There were no incorrect acceptances. Cost $0.000418 (D058).
+- [x] ~~Matched live prepare/Cancel trials per action under `llm`, `rules`, and `decisions`~~
+      Not needed: Decisions was removed (D059). `rules` vs `llm` Reddit trials are in D058.
+
+Exclusions: new websites, screenshots to models, generated search text, drafting changes,
+Gateway, dependencies, migrations, submit authorization changes, and a default change.
+
+Verification and outcome (automated only):
+
+- `pnpm exec tsc --noEmit` and `pnpm build` passed.
+- `pnpm test` passed with credential/CDP-dependent skips reported accurately.
+- `pnpm exec biome check src tests package.json` passed for application code and fixtures.
+- Live comparison and promotion gate remain open; see D057 and the 05-10 plan.
+
+## Live fix 3 — Reddit composer hydration; `rules` becomes the default (2026-10-29)
+
+Status: done — approved by the user on 2026-10-29 ("rules → Responses as the architecture").
+See D058 for the cause and the measurements.
+
+- [x] Clicking a snapshot element that is no longer visible fails within 1.5 s with
+      `StaleRefError`, and the toolbox drops the snapshot. Previously it waited out the 10 s
+      action timeout.
+- [x] Reddit-comment navigation on the target thread waits up to 5 s for a visible editor in
+      the top-level composer (`waitForRedditCommentComposer`, sharing `composer_check`'s
+      in-page ownership test) before the first snapshot. The navigate audit records
+      `composerReady`.
+- [x] `AGENT_STEP_POLICY` defaults to `rules`; `llm` and `decisions` stay selectable.
+- [x] Tests: the toolbox stale-click and hydration cases, the rules policy on a hydrating
+      thread with no model call, and real-Chromium fixtures for the hidden click, a delayed
+      composer, and the nested, wrong-post and hidden cases.
+- [x] Live: composer focus with `rules` took 5.2 s with no model calls; drafted prepare to
+      approval then Cancel took 11.0 s under `rules` and 27.7 s under `llm`.
+- [x] Decisions removed on 2026-10-29 with the user's approval (D059).

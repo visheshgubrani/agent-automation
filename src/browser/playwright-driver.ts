@@ -1,4 +1,4 @@
-import { type Browser, chromium, type Frame, type Page } from 'playwright-core'
+import { type Browser, chromium, errors, type Frame, type Page } from 'playwright-core'
 import { isRecaptchaAnchorUrl } from './detectors.js'
 import type {
   BrowserDriver,
@@ -13,6 +13,7 @@ import {
   type RedditPostContent,
   redditThreadId,
 } from './reddit.js'
+import { StaleRefError } from './snapshot.js'
 
 export interface PlaywrightDriverOptions {
   /** Loopback CDP endpoint (validated by config). */
@@ -23,7 +24,38 @@ export interface PlaywrightDriverOptions {
 }
 
 const SCROLL_PIXELS = 600
+const CLICK_VISIBLE_WAIT_MS = 1_500
 const MAX_OBSERVED_FRAMES = 64
+const REDDIT_COMPOSER_POLL_MS = 250
+/** Editable controls a Reddit composer can hold; Playwright CSS pierces open shadow roots. */
+const REDDIT_COMPOSER_TEXTBOXES =
+  'comment-composer-host textarea, comment-composer-host [role="textbox"], comment-composer-host [contenteditable="true"]'
+
+/**
+ * In-page check, passed to `evaluate`: `element` sits in the top-level comment composer of
+ * post `expected` (`t3_…`), not in a reply composer or another post's. Keep it self-contained;
+ * Playwright serializes it into the page.
+ */
+const inTopLevelRedditComposer = (element: Element, expected: string): boolean => {
+  let current: Element | null = element
+  let composer = false
+  let owned = false
+  while (current) {
+    if (current.tagName.toLowerCase() === 'shreddit-comment') return false
+    if (current.tagName.toLowerCase() === 'comment-composer-host') composer = true
+    for (const name of ['parent-id', 'thing-id', 'post-id']) {
+      const value = current.getAttribute(name)
+      if (value?.startsWith('t1_')) return false
+      if (value?.startsWith('t3_')) {
+        if (value !== expected) return false
+        owned = true
+      }
+    }
+    const root = current.getRootNode()
+    current = current.parentElement ?? (root instanceof ShadowRoot ? root.host : null)
+  }
+  return composer && owned
+}
 
 export class PlaywrightPage implements BrowserPage {
   constructor(
@@ -192,34 +224,47 @@ export class PlaywrightPage implements BrowserPage {
   async isRedditCommentComposer(ref: string, targetUrl: string): Promise<boolean> {
     const id = redditThreadId(targetUrl)
     if (!id || redditThreadId(this.page.url()) !== id) return false
-    return this.page.getByRef(ref).evaluate(
-      (element, expected) => {
-        let current: Element | null = element
-        let composer = false
-        let owned = false
-        while (current) {
-          if (current.tagName.toLowerCase() === 'shreddit-comment') return false
-          if (current.tagName.toLowerCase() === 'comment-composer-host') composer = true
-          for (const name of ['parent-id', 'thing-id', 'post-id']) {
-            const value = current.getAttribute(name)
-            if (value?.startsWith('t1_')) return false
-            if (value?.startsWith('t3_')) {
-              if (value !== expected) return false
-              owned = true
-            }
-          }
-          const root = current.getRootNode()
-          current = current.parentElement ?? (root instanceof ShadowRoot ? root.host : null)
-        }
-        return composer && owned
-      },
-      `t3_${id}`,
-      { timeout: this.timeouts.action },
-    )
+    return this.page
+      .getByRef(ref)
+      .evaluate(inTopLevelRedditComposer, `t3_${id}`, { timeout: this.timeouts.action })
+  }
+
+  async waitForRedditCommentComposer(targetUrl: string, timeoutMs: number): Promise<boolean> {
+    const id = redditThreadId(targetUrl)
+    if (!id || redditThreadId(this.page.url()) !== id) return false
+    const deadline = Date.now() + timeoutMs
+    const candidates = this.page.locator(REDDIT_COMPOSER_TEXTBOXES)
+    for (;;) {
+      for (const candidate of await candidates.all()) {
+        // Nodes can detach mid-hydration; a failed probe just means "not this one".
+        const ready =
+          (await candidate.isVisible().catch(() => false)) &&
+          (await candidate
+            .evaluate(inTopLevelRedditComposer, `t3_${id}`, { timeout: REDDIT_COMPOSER_POLL_MS })
+            .catch(() => false))
+        if (ready) return true
+      }
+      const left = deadline - Date.now()
+      if (left <= 0) return false
+      await this.page.waitForTimeout(Math.min(REDDIT_COMPOSER_POLL_MS, left))
+    }
   }
 
   async click(ref: string): Promise<void> {
-    await this.page.getByRef(ref).click({ timeout: this.timeouts.action })
+    const target = this.page.getByRef(ref)
+    // A snapshot taken mid-render can hold a node the page has since hidden (Reddit swaps its
+    // placeholder composer on hydration). Fail fast so the agent re-snapshots instead of
+    // waiting out the whole action timeout on an element that will never become visible.
+    try {
+      await target.waitFor({
+        state: 'visible',
+        timeout: Math.min(CLICK_VISIBLE_WAIT_MS, this.timeouts.action),
+      })
+    } catch (error) {
+      if (!(error instanceof errors.TimeoutError)) throw error
+      throw new StaleRefError('That element is no longer visible; take a fresh snapshot.')
+    }
+    await target.click({ timeout: this.timeouts.action })
   }
 
   async fill(ref: string, value: string): Promise<void> {

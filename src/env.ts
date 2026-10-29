@@ -19,6 +19,11 @@ export const DEFAULT_AGENT_REASONING_EFFORT = 'medium'
 export const DEFAULT_AGENT_MAX_STEPS = 25
 export const DEFAULT_AGENT_MAX_OUTPUT_TOKENS = 4_000
 export const DEFAULT_AGENT_STEP_TIMEOUT_MS = 90_000
+/**
+ * `rules` (default) tries the model-free fast path before the model loop (D056, D058); `llm`
+ * runs the model loop alone.
+ */
+export const DEFAULT_AGENT_STEP_POLICY = 'rules'
 /** Loopback only: the browser container publishes CDP on host 127.0.0.1:9222 (D041). */
 export const DEFAULT_BROWSER_CDP_URL = 'http://127.0.0.1:9222'
 export const DEFAULT_BROWSER_HANDOFF_TIMEOUT_MINUTES = 15
@@ -115,6 +120,10 @@ const envSchema = z.object({
   AGENT_MAX_STEPS: integerWithDefault(1, 100, DEFAULT_AGENT_MAX_STEPS),
   AGENT_MAX_OUTPUT_TOKENS: integerWithDefault(1, 16_000, DEFAULT_AGENT_MAX_OUTPUT_TOKENS),
   AGENT_STEP_TIMEOUT_MS: integerWithDefault(1_000, 300_000, DEFAULT_AGENT_STEP_TIMEOUT_MS),
+  AGENT_STEP_POLICY: z.preprocess(
+    (v) => (v === '' || v == null ? undefined : v),
+    z.enum(['llm', 'rules']).default(DEFAULT_AGENT_STEP_POLICY),
+  ),
   AGENT_TASK_MAX_USD: optionalInteger(z.coerce.number().positive().max(10)),
   BROWSER_CDP_URL: z.preprocess(
     (v) => (v === '' || v == null ? undefined : v),

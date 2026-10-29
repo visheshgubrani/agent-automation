@@ -6,6 +6,7 @@ import type {
   ScrollDirection,
 } from '../../src/browser/driver.js'
 import { type RedditPostContent, redditThreadId } from '../../src/browser/reddit.js'
+import { parseSnapshotElements, StaleRefError } from '../../src/browser/snapshot.js'
 
 /** One scripted page state. Snapshots use Playwright AI-mode syntax with `[ref=eN]`. */
 export interface FakePageModel {
@@ -19,6 +20,10 @@ export interface FakePageModel {
   /** Field values by ref, updated by fill. */
   values?: Record<string, string>
   disabled?: string[]
+  /** Refs the page has since hidden; clicking one throws like the real driver. */
+  hiddenRefs?: string[]
+  /** Page state once Reddit hydrates; the composer wait swaps it in. */
+  hydrate?: () => FakePageModel
   /** Next page state per clicked ref; a click on an unlisted ref leaves the page as is. */
   onClick?: Record<string, () => FakePageModel>
   /** Override the stored value when read back (simulates editors that change text). */
@@ -39,6 +44,8 @@ const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
 
 export class FakeBrowserPage implements BrowserPage {
   readonly actions: FakeAction[] = []
+  /** Composer waits, counted apart from `actions` so action-order assertions stay unchanged. */
+  composerWaits = 0
   private history: FakePageModel[] = []
   private screenshots = 0
 
@@ -118,7 +125,23 @@ export class FakeBrowserPage implements BrowserPage {
     )
   }
 
+  async waitForRedditCommentComposer(targetUrl: string): Promise<boolean> {
+    this.composerWaits += 1
+    if (redditThreadId(targetUrl) === undefined) return false
+    if (redditThreadId(targetUrl) !== redditThreadId(this.model.url)) return false
+    if (this.model.hydrate) this.model = this.model.hydrate()
+    for (const element of parseSnapshotElements(this.model.snapshot).values())
+      if (
+        element.role === 'textbox' &&
+        (await this.isRedditCommentComposer(element.ref, targetUrl))
+      )
+        return true
+    return false
+  }
+
   async click(ref: string): Promise<void> {
+    if (this.model.hiddenRefs?.includes(ref))
+      throw new StaleRefError('That element is no longer visible; take a fresh snapshot.')
     this.actions.push({ type: 'click', ref })
     const next = this.model.onClick?.[ref]
     if (next) {
@@ -267,6 +290,40 @@ export function redditLongComposer(): FakePageModel {
       '  - button "Cancel" [ref=e21] [cursor=pointer]',
       ...fillerComments(20, 1000),
     ].join('\n'),
+  }
+}
+
+/**
+ * A thread mid-hydration, like the live page on 2026-10-29: the first snapshot holds a
+ * placeholder composer outside any `comment-composer-host` (it fails the composer check); once
+ * hydrated, a new top-level composer replaces it and the placeholder node is hidden.
+ */
+export function redditHydratingThread(): FakePageModel {
+  const header = [
+    '- main [ref=e1]:',
+    '  - heading "A thread" [level=1] [ref=e2]',
+    '  - searchbox "Search Reddit" [ref=e10]',
+  ]
+  return {
+    url: THREAD_URL,
+    title: 'A thread : r/test',
+    snapshot: [
+      ...header,
+      '  - textbox [ref=e30]:',
+      '    - /placeholder: Join the conversation',
+    ].join('\n'),
+    nonTopLevelRefs: ['e30'],
+    hydrate: () => ({
+      url: THREAD_URL,
+      title: 'A thread : r/test',
+      snapshot: [
+        ...header,
+        '  - textbox [ref=e31]:',
+        '    - /placeholder: Join the conversation',
+      ].join('\n'),
+      hiddenRefs: ['e30'],
+      onClick: { e31: redditComposer },
+    }),
   }
 }
 

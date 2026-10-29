@@ -29,6 +29,9 @@ export interface MailConfig {
 
 export type AgentReasoningEffort = 'medium' | 'high'
 
+/** How a browser task is prepared before approval (D056, D058). */
+export type AgentStepPolicy = 'llm' | 'rules'
+
 /**
  * Validated browser-agent config (phase 05). Present only when `AGENT_ENABLED=true`; its
  * absence leaves the heartbeat-only and mail-only worker paths unchanged.
@@ -40,6 +43,8 @@ export interface AgentConfig {
   maxSteps: number
   maxOutputTokens: number
   stepTimeoutMs: number
+  /** Absent means `llm`: the model loop prepares every task. */
+  stepPolicy?: AgentStepPolicy
   /** Per-task model-spend cap, checked before each reservation (D044). */
   taskMaxUsd: number
   browser: {
@@ -226,6 +231,7 @@ function readAgentConfig(env: Env, issues: string[]): AgentConfig | undefined {
     maxSteps: env.AGENT_MAX_STEPS,
     maxOutputTokens: env.AGENT_MAX_OUTPUT_TOKENS,
     stepTimeoutMs: env.AGENT_STEP_TIMEOUT_MS,
+    stepPolicy: env.AGENT_STEP_POLICY,
     taskMaxUsd,
     browser: {
       cdpUrl,
