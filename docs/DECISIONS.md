@@ -1165,3 +1165,151 @@ Date: 2026-10-26 | Status: accepted | Phase: [05 increment 8](phases/05-telegram
   advice wait; rejected for missing context and unnecessarily blocking other tasks.
 - Revisits D046 only for new `/comment` commands; existing exact-text requests and saved
   tasks keep their semantics. No new schema or dependencies.
+
+## D056: Rule-based fast path before the browser model loop; Jev deferred
+
+Date: 2026-10-28 | Status: accepted (opt-in) | Phase: [05 increment 9](phases/05-telegram-agent-browser-actions.md)
+- Approval: the user approved the "rule-based fast path first" plan on 2026-10-28, after
+  asking to research TypeSafe's Jev for faster browser automation.
+- Context: Jev (TypeSafe AI) is a "System One" decision model, not a browser driver. It answers
+  typed `choice`/`score`/`boolean` questions over a state with probabilities, cannot write text,
+  and is reached through Vercel AI Gateway (`typesafe-ai/jev-1.14.0`: $0.042 per million input
+  tokens, free output, zero data retention, no training, US only, 32k context). The installed
+  `ai@7.0.137` already has `createGateway` and the experimental `experimental_decide`.
+- Why not Jev now: snapshots carry typed text (a fill invalidates refs and `snapshot.ts` has no
+  redaction), so a privacy-safe Jev input is limited to registry openers and fields described by
+  registry labels. Under that limit Jev has nothing to decide. A fixed rule picks the same step
+  for one matching element, and two matching elements get identical labels, so Jev could only guess.
+  `jevrun` and Browser Use's `jev-ultrafast` were rejected for the D043 reasons: their own loop,
+  hidden spend, no submit guard, typed values in history, Python, or no CDP attach.
+- Baseline: the only `agent_browser_step` data (3 runs on 2026-10-25: 2, 25 and 9 steps; p50
+  2.3 s per call) is not a valid baseline. The 25-step run is the pre-D054 cut-snapshot failure
+  (17 scrolls, no fill), and only one run reached approval. Re-measure before claiming a saving.
+- Choice: `AGENT_STEP_POLICY=rules` (default `llm`) runs a model-free fast path first. It
+  navigates to the target and lets the existing observation, detectors and compose hooks run.
+  Each step it picks from the registry and the full parsed element map, never from page prose:
+  - Fill the first unfilled field when the form is open and exactly one enabled element fits.
+    A single focused element breaks a tie; Reddit comment candidates are narrowed by the
+    existing top-level composer check.
+  - Open the form once: a registry opener (identical duplicates count as one), or a collapsed
+    single field such as Reddit's unnamed "Join the conversation" box.
+  - Request approval from a fresh snapshot when each field and the enabled commit control
+    resolve to exactly one element with distinct refs.
+
+  Every action goes through `BrowserToolbox`, so guards, audit rows, stale-ref checks, read-back
+  and the approval payload are unchanged. It never targets a commit control before approval.
+- Fallback: anything else hands off one way to the unchanged `ToolLoopAgent` on the same page,
+  toolbox, spec, signals and run IDs:
+  - ambiguity, no form, a missing field or pending composition;
+  - a repeated step with no progress, or two refusals in a row;
+  - a non-guard failure, or the 10-action cap.
+
+  The model starts from a snapshot with a value-free trail (`fill_field <key>`,
+  `click_opener <role>`) and keeps its full `AGENT_MAX_STEPS`, since the fast path makes no
+  model calls. Once approval is requested, nothing resumes. Cancellation, shutdown, advice,
+  already-applied, compose errors and unresolved handoffs end the fast path exactly as they end
+  the model loop.
+- Consequence: no schema, dependency, budget, approval or executor change. Logs carry only the
+  end, action count and reason code.
+- Revisit Jev if the logs show more than about 30% of fast-path runs handing off as
+  `ambiguous_*` where bounded, value-free context could separate the candidates. That work would
+  follow a budgeted, ZDR-only gateway contract with a pinned model version.
+
+## D057: Opt-in OpenAI Decisions step before the Responses fallback; default stays `llm`
+
+Date: 2026-10-28 | Status: superseded by D059 (removed 2026-10-29) | Phase: [05 increment 10](phases/05-10-openai-decisions-browser-controller.md)
+- Supersedes only D056's future-provider/controller choice (direct OpenAI Decisions instead of a
+  Gateway Jev, shared preparation core instead of rules-then-model only). D056, its rationale,
+  and its live baseline limitation stay intact.
+- Context: rules handle the obvious steps but hand off on ambiguity; the full Responses loop is
+  reliable but slower. OpenAI Decisions answers one typed `choice` (`next_operation`) with
+  probabilities over code-assembled operations, without generating selectors, URLs, or values.
+- Choice: `AGENT_STEP_POLICY=decisions` (default stays `llm`) runs rules, then Decisions, then at
+  most one Responses fallback: rules → Decisions → Responses → exact approval → deterministic
+  submission. Decisions selects only an opaque choice ID; code executes the complete operation.
+  Direct OpenAI provider `decisionModel('gpt-6-luna')` via `experimental_decide` (no Gateway,
+  no new key, `AGENT_MODEL` still selects Responses). Input is existing text snapshots/refs;
+  output is one choice over complete operations. Accept only at probability >= 0.90 with margin
+  >= 0.20, else fall back. Budgets share the task cap, serialization, daily/agent limits, and
+  `Asia/Kolkata` day; Decisions reserves worst-case input (highest input rate, output 0) and
+  records `agent_browser_decision` with no reasoning effort. No migration, package, origin,
+  or default change.
+- Rollout: opt-in only until matched prepare/Cancel trials per action show no wrong-target
+  approvals, no worse completion than the existing controller, model-free rule-only cases, and
+  lower median preparation time than `llm`. Promotion needs a separate rollout change.
+- Live status: automated controller, budgeting, and evaluation checks pass; `pnpm
+  agent:decisions:evaluate` and the matched live prepare/Cancel comparison remain pending.
+
+## D058: `rules` → Responses is the default; Reddit waits for its hydrated composer
+
+Date: 2026-10-29 | Status: accepted | Phase: [05](phases/05-telegram-agent-browser-actions.md)
+- Approval: the user approved the "rules → Responses as the architecture" plan on 2026-10-29,
+  after asking whether the Decisions model was worth keeping.
+- Supersedes only the "default stays `llm`" clauses of D056 and D057. Both stay intact
+  otherwise; Decisions remains opt-in under D057's promotion gate.
+- Root cause found live: Reddit hydrates its comment composer about 2–5 s after
+  DOMContentLoaded. The first snapshot held a placeholder `textarea` outside any
+  `comment-composer-host`; hydration replaces it and hides the old node. `llm` clicked the stale
+  ref and Playwright waited out the 10 s action timeout. `rules` excluded the placeholder by
+  `composer_check` and handed off as `no_form`. Decisions was asked to choose on that snapshot,
+  where the composer was not a candidate.
+- Fixes:
+  - `PlaywrightPage.click` waits at most 1.5 s for visibility, then throws `StaleRefError`.
+    `BrowserToolbox.click` drops the snapshot, so the agent re-observes instead of waiting.
+  - `BrowserToolbox.navigate` (reddit_comment, on the target thread) waits up to 5 s for a
+    visible editor that passes the same top-level ownership check as `composer_check`
+    (`waitForRedditCommentComposer`), before the first snapshot. Detectors, drafting and rules
+    therefore see the hydrated page. A timeout is not an error; the audit row records
+    `composerReady`.
+- Measurements (2026-10-29, live AskReddit thread, `gpt-6-luna` medium, real profile; scratch
+  results under `.scratch/browser-timing/`):
+  - Find and click the composer, before the fixes: `llm` 24.4 s (4 Responses calls),
+    `decisions` 12.1 s (1 Decisions call, never accepted, plus 2 Responses), `rules` 10.7 s
+    (2 Responses).
+  - After the fixes: `rules` 5.2 s with **no model calls**, `llm` 11.3 s (2 Responses).
+  - `/comment`-style prepare to the approval card, then Cancel, with real drafting (2 trials
+    each): `rules` 11.0 s with only the drafting call (about $0.0001); `llm` 27.7 s with 6–7
+    Responses steps (about $0.0047). Every trial reached approval on the top-level composer,
+    and nothing was posted.
+  - Paid `pnpm agent:decisions:evaluate`: 1 of 9 cases ok (only `too-many-choices`, which makes
+    no call). All 8 model calls fell below the 0.90 gate (top-choice probability 0.35–0.72),
+    for $0.000418. There were no incorrect acceptances, but also no accepted operations.
+- Choice: `AGENT_STEP_POLICY` defaults to `rules`. The pipeline is rules → one-way Responses
+  fallback → exact approval → deterministic submission. `llm` and `decisions` stay selectable.
+- Consequence: no schema, dependency, budget, approval or executor change. Worker restarts pick
+  up the new default; a `.env` with an explicit `AGENT_STEP_POLICY` keeps its value. The YC /
+  Wellfound live prepare/Cancel trials under `rules` are still pending (increment 9). Rules hand
+  off on any ambiguity, so the worst case there is the `llm` path plus the rule checks.
+- Next: Decisions failed its evaluation gate and was removed the same day (D059).
+
+## D059: Remove the OpenAI Decisions browser controller
+
+Date: 2026-10-29 | Status: accepted | Phase: [05](phases/05-telegram-agent-browser-actions.md)
+- Approval: the user approved removal on 2026-10-29 ("Yes, remove it"), after D058's measurements.
+- Supersedes D057.
+- Why: in 5/5 live Reddit calls and 8/8 paid evaluation calls, the gate accepted nothing
+  (top-choice probability 0.23–0.72 against the 0.90 bar). Every `decisions` run therefore
+  paid for one call plus the same Responses fallback as `rules`, and was slower than `rules`
+  (12.1 s against 10.7 s before D058). After D058, `rules` reaches the Reddit composer, and the
+  approval card for a drafted comment, with no browser-model calls, so Decisions has no
+  remaining job there. The evaluation's application cases fell back too.
+- Removed:
+  - Source: the decisions half of `src/agent/browser-controller.ts` (`runBrowserPreparation`
+    now dispatches `rules` → `runFastPathThenAgent` and `llm` → `runBrowserAgent`),
+    `src/agent/browser-decision-actions.ts`, `src/agent/browser-decision-eval-cases.ts` and
+    `src/tools/browser-decisions-evaluate.ts`.
+  - The `pnpm agent:decisions:evaluate` script, `createAgentDecisionProviderModel`, and the
+    Decisions overload of `createBudgetedModel` with its per-API pricing.
+  - The decision-model factory seams in `src/jobs/browser-task*.ts`, the `decisions` value of
+    `AGENT_STEP_POLICY`, and the Decisions tests, fakes and fixtures.
+- Kept from increment 10:
+  - The `browser-task-state` / `browser-task-session` extraction.
+  - The rules fast path living in `browser-controller.ts`, and the `resume` handoff into the
+    model loop.
+  - The reservation pricing fix (input priced at the higher of the uncached and cache-write
+    rates).
+- Consequence: no schema change. `llm_calls` is untouched; its purpose is open text, so past
+  `agent_browser_decision` rows remain valid history. A `.env` that still says
+  `AGENT_STEP_POLICY=decisions` now fails config validation (fail closed) instead of running
+  silently. Revisit typed decision models only if the D056 revisit signal appears: over about
+  30% of fast-path handoffs `ambiguous_*` where value-free context could separate the candidates.

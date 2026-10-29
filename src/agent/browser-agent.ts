@@ -67,10 +67,17 @@ export function buildBrowserAgentInstructions(
   ].join('\n')
 }
 
+/** Where the fast path left off (D056): filled keys and fixed, value-free step names. */
+export interface BrowserAgentResume {
+  filledKeys: readonly string[]
+  trail: readonly string[]
+}
+
 export function buildBrowserAgentPrompt(input: {
   action: SiteAction
   spec: BrowserTaskSpecV1
   instruction: string
+  resume?: BrowserAgentResume
 }): string {
   const fields = (
     input.spec.composeNote || input.spec.composeComment ? input.action.fields : input.spec.fields
@@ -84,7 +91,12 @@ export function buildBrowserAgentPrompt(input: {
     `Task: ${input.instruction}`,
     `Target: ${input.spec.targetUrl}`,
     `Fields to fill: ${fields}`,
-    'Start with navigate to the target, or snapshot if the page is already open.',
+    ...(input.resume
+      ? [
+          `Preparation is already underway on the open page. Done: ${input.resume.trail.join('; ') || 'nothing'}. Filled: ${input.resume.filledKeys.join(', ') || 'none'}.`,
+          'Start with snapshot; navigate only if the page is not the target.',
+        ]
+      : ['Start with navigate to the target, or snapshot if the page is already open.']),
   ].join('\n')
 }
 
@@ -140,6 +152,8 @@ export interface RunBrowserAgentOptions {
   action: SiteAction
   spec: BrowserTaskSpecV1
   instruction: string
+  /** Set when the fast path handed off; the loop then starts from the open page. */
+  resume?: BrowserAgentResume
   shutdownSignal?: AbortSignal
   taskCancelSignal?: AbortSignal
 }
@@ -207,6 +221,7 @@ export async function runBrowserAgent(
         action: options.action,
         spec: options.spec,
         instruction: options.instruction,
+        ...(options.resume !== undefined ? { resume: options.resume } : {}),
       }),
       ...(runSignal !== undefined ? { abortSignal: runSignal } : {}),
     })

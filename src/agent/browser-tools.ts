@@ -39,6 +39,8 @@ import {
 
 export const REPORT_SUMMARY_MAX_CHARS = 500
 const URL_MAX_CHARS = 2_048
+/** Upper bound on waiting for Reddit to hydrate the top-level composer after navigation. */
+export const REDDIT_COMPOSER_WAIT_MS = 5_000
 
 /** Outcome of a handoff, decided by the handoff layer (increment 4). */
 export type HumanOutcome = 'resolved' | 'cancelled' | 'timed_out' | 'interrupted' | 'limit_reached'
@@ -317,6 +319,7 @@ export class BrowserToolbox {
   })
 
   navigate(url: string): Promise<SnapshotToolResult> {
+    let composerReady: boolean | undefined
     return this.call(
       'navigate',
       'read',
@@ -324,9 +327,23 @@ export class BrowserToolbox {
       async () => {
         assertAllowedOrigin(this.opts.site, url)
         await this.opts.page.goto(url)
+        // The first snapshot feeds detectors, drafting and the rules; take it after Reddit
+        // swaps its placeholder composer for the real one, or the agent acts on a stale node.
+        if (
+          this.opts.action.key === 'reddit_comment' &&
+          isActionTargetPage(this.opts.action, this.opts.spec.targetUrl, this.opts.page.url())
+        ) {
+          composerReady = await this.opts.page.waitForRedditCommentComposer(
+            this.opts.spec.targetUrl,
+            REDDIT_COMPOSER_WAIT_MS,
+          )
+        }
         return this.afterPageChange()
       },
-      this.snapshotAudit,
+      (result) => ({
+        ...this.snapshotAudit(result),
+        ...(composerReady !== undefined ? { composerReady } : {}),
+      }),
     )
   }
 
@@ -373,7 +390,13 @@ export class BrowserToolbox {
             )
           this.applicationOpened = true
         }
-        await this.opts.page.click(element.ref)
+        try {
+          await this.opts.page.click(element.ref)
+        } catch (error) {
+          // The page re-rendered under this snapshot; none of its refs can be trusted now.
+          if (error instanceof StaleRefError) this.tracker.invalidate()
+          throw error
+        }
         return this.afterPageChange()
       },
       this.snapshotAudit,
@@ -468,6 +491,20 @@ export class BrowserToolbox {
         return this.observe()
       },
       this.snapshotAudit,
+    )
+  }
+
+  /** Read-only: whether `ref` sits in the requested post's top-level comment composer. */
+  isTopLevelCommentComposer(ref: string): Promise<boolean> {
+    return this.call(
+      'composer_check',
+      'read',
+      { ref },
+      async () => {
+        const element = this.tracker.resolve(ref)
+        return this.opts.page.isRedditCommentComposer(element.ref, this.opts.spec.targetUrl)
+      },
+      (composer) => ({ composer }),
     )
   }
 

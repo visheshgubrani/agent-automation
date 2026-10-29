@@ -156,6 +156,8 @@ function fakeTransport() {
 }
 
 interface FlowOptions {
+  /** `rules` prepares with the fast path; the step model must then never be called. */
+  stepPolicy?: 'rules'
   tamperOnSecondRead?: boolean
   frames?: FrameObservation[]
   framesAfterApproval?: FrameObservation[]
@@ -194,6 +196,7 @@ async function legacyCommentMessage() {
 /** Full path: intake → queued card → job → approval card → Telegram callback → execution. */
 async function runCommentFlow(options: FlowOptions = {}): Promise<FlowResult> {
   const config = await agentConfig()
+  if (options.stepPolicy) config.stepPolicy = options.stepPolicy
   const message = await legacyCommentMessage()
   const { boss, sent } = fakeBoss()
   await handleAgentIntakeJob({
@@ -234,16 +237,18 @@ async function runCommentFlow(options: FlowOptions = {}): Promise<FlowResult> {
   }
   const page = new FakeBrowserPage(makeThread(), { [THREAD_URL]: makeThread })
   const driver = new FakeBrowserDriver(() => page)
-  const steps = [
-    toolCallResult('navigate', { url: THREAD_URL }),
-    toolCallResult('click', { ref: '1:e8' }),
-    toolCallResult('fill_field', { ref: '2:e20', fieldKey: 'comment_text' }),
-    toolCallResult('snapshot', {}),
-    toolCallResult('request_submit_approval', {
-      submitRef: '3:e22',
-      fieldRefs: { comment_text: '3:e20' },
-    }),
-  ]
+  const steps = options.stepPolicy
+    ? []
+    : [
+        toolCallResult('navigate', { url: THREAD_URL }),
+        toolCallResult('click', { ref: '1:e8' }),
+        toolCallResult('fill_field', { ref: '2:e20', fieldKey: 'comment_text' }),
+        toolCallResult('snapshot', {}),
+        toolCallResult('request_submit_approval', {
+          submitRef: '3:e22',
+          fieldRefs: { comment_text: '3:e20' },
+        }),
+      ]
   const modelFactory = (runId: string) =>
     createBudgetedModel(scriptedModel(steps), {
       db,
@@ -419,6 +424,22 @@ describe('browser task end to end', () => {
     expect(resultCard.status).toBe('pending')
     expect(resultCard.body).toContain('Succeeded.')
     expect(resultCard.body).toContain(`Link: ${THREAD_URL}`)
+  })
+
+  it('the rules policy prepares the same approval with no step-model call', async () => {
+    const flow = await runCommentFlow({ stepPolicy: 'rules' })
+
+    expect(flow.jobResult).toMatchObject({ runOpened: true, status: 'succeeded' })
+    expect(flow.approval.status).toBe('approved')
+    expect(flow.approvalCard.body).toContain(`Comment (verbatim):\n${COMMENT}`)
+    // The fast path opened the composer; only the executor clicked the commit control.
+    expect(flow.page.actions.filter((a) => a.type === 'click').map((a) => a.ref)).toEqual([
+      'e8',
+      'e22',
+    ])
+    expect(await db.select().from(llmCalls)).toHaveLength(0)
+    const sendCalls = await db.select().from(toolCalls).where(eq(toolCalls.riskTier, 'send'))
+    expect(sendCalls).toHaveLength(1)
   })
 
   it('background reCAPTCHA anchors and hidden challenge frames do not block approved execution', async () => {

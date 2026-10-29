@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { BrowserSession } from '../src/browser/driver.js'
 import { PlaywrightBrowserDriver } from '../src/browser/playwright-driver.js'
-import { parseSnapshotElements } from '../src/browser/snapshot.js'
+import { parseSnapshotElements, StaleRefError } from '../src/browser/snapshot.js'
 
 /**
  * Optional real-Chromium checks against fixture HTML. Run with the browser container up:
@@ -27,6 +27,10 @@ const PAGES: Record<string, string> = {
     <iframe title="widget" src="/frame"></iframe>
   </main>`,
   '/frame': '<!doctype html><title>frame</title><p>inner</p>',
+  '/rerender': `<!doctype html><title>Rerender</title><main>
+    <button type="button" id="stale">Placeholder</button>
+    <button type="button" onclick="document.getElementById('stale').hidden=true">Hydrate</button>
+  </main>`,
   '/visibility': `<!doctype html><title>Frame visibility</title><main>
     <iframe title="visible" src="/frame?visible"></iframe>
     <iframe title="hidden" style="display:none" src="/frame?hidden"></iframe>
@@ -125,5 +129,20 @@ describe.skipIf(!cdpUrl)('Playwright driver against real Chromium', () => {
     expect(
       (await page.frameObservations()).find((frame) => frame.url.endsWith('?hidden'))?.visible,
     ).toBe(true)
+  })
+
+  it('fails fast with a stale-ref error when a snapshot element was hidden by a re-render', async () => {
+    const { page } = session
+    await page.goto(`${base}/rerender`)
+    const elements = [...parseSnapshotElements(await page.ariaSnapshot()).values()]
+    const ref = (name: string) => {
+      const element = elements.find((e) => e.role === 'button' && e.name === name)
+      if (!element) throw new Error(`missing fixture button ${name}`)
+      return element.ref
+    }
+    await page.click(ref('Hydrate'))
+    const started = performance.now()
+    await expect(page.click(ref('Placeholder'))).rejects.toBeInstanceOf(StaleRefError)
+    expect(performance.now() - started).toBeLessThan(5_000)
   })
 })

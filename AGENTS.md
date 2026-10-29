@@ -26,6 +26,9 @@ OpenAI, Postgres (pgvector) + Drizzle. V1 schema lives in `src/db/schema/`.
   tasks in Asia/Kolkata (minimum hourly). `/comment <thread-url> [thoughts]` reads the post and
   drafts a short casual comment; reply directly to an optional advice question. Every submit
   still needs approval.
+- `AGENT_STEP_POLICY=rules` (default, D058) tries the model-free registry fast path before the
+  browser model loop; any ambiguity hands off one way to the model on the same page (D056).
+  `llm` runs the model loop alone. The OpenAI Decisions controller (D057) was removed (D059).
 - `pnpm agent:profile set --file <path>` — save a bounded UTF-8 applicant profile (complete
   first-person facts, one per line); prints only a character count.
 - `pnpm browser:up` / `pnpm browser:down` — agent browser container (headful Chromium, profile
@@ -94,4 +97,6 @@ OpenAI, Postgres (pgvector) + Drizzle. V1 schema lives in `src/db/schema/`.
   in progress (increments 0–7 implemented 2026-10-25; increment 1 live spike checks and increments 3–7
   live checks pending; D053/D054 fixes are verified automatically. Increment 8 adds thread-aware
   Reddit drafting and direct advice replies (D055), verified by 640 tests; live Telegram
-  draft/tone and approved-submit checks remain pending).
+  draft/tone and approved-submit checks remain pending. Increment 9 adds the rule-based fast path
+  (D056); live fix 3 makes it the default and waits for Reddit's hydrated composer (D058). The
+  YC/Wellfound live comparisons are pending).

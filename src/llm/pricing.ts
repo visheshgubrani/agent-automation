@@ -87,7 +87,8 @@ export function computeUsageCostUsd(rates: ModelTokenRates, usage: TokenUsage): 
  * Bounded worst-case reservation for one model attempt. Two tokens per input character is
  * deliberately conservative for unusual Unicode; `overheadTokens` covers role markers and
  * provider-side formatting. `maxOutputTokens` already includes any reasoning tokens. Every
- * input token is priced at the uncached rate, which is never lower than the cached rates.
+ * input token is priced at the highest applicable input rate, so cache-write pricing (which
+ * can exceed the uncached rate) cannot exceed its supposed worst case.
  */
 export function estimateReservationUsd(
   rates: ModelTokenRates,
@@ -95,7 +96,6 @@ export function estimateReservationUsd(
 ): number {
   const inputTokens = Math.max(0, options.inputChars) * 2 + Math.max(0, options.overheadTokens)
   const outputTokens = Math.max(0, options.maxOutputTokens)
-  return roundUsd(
-    (inputTokens * rates.inputPerMillionUsd + outputTokens * rates.outputPerMillionUsd) / 1_000_000,
-  )
+  const inputRate = Math.max(rates.inputPerMillionUsd, rates.cacheWritePerMillionUsd)
+  return roundUsd((inputTokens * inputRate + outputTokens * rates.outputPerMillionUsd) / 1_000_000)
 }

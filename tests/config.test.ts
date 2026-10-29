@@ -10,6 +10,7 @@ import {
   DEFAULT_AGENT_MAX_OUTPUT_TOKENS,
   DEFAULT_AGENT_MAX_STEPS,
   DEFAULT_AGENT_REASONING_EFFORT,
+  DEFAULT_AGENT_STEP_POLICY,
   DEFAULT_AGENT_STEP_TIMEOUT_MS,
   DEFAULT_BROWSER_APPROVAL_TIMEOUT_MINUTES,
   DEFAULT_BROWSER_CDP_URL,
@@ -475,6 +476,7 @@ describe('agent configuration', () => {
       maxSteps: DEFAULT_AGENT_MAX_STEPS,
       maxOutputTokens: DEFAULT_AGENT_MAX_OUTPUT_TOKENS,
       stepTimeoutMs: DEFAULT_AGENT_STEP_TIMEOUT_MS,
+      stepPolicy: DEFAULT_AGENT_STEP_POLICY,
       taskMaxUsd: 0.1,
       browser: {
         cdpUrl: DEFAULT_BROWSER_CDP_URL,
@@ -562,6 +564,18 @@ describe('agent configuration', () => {
     expect(parseError({ DATABASE_URL, AGENT_MAX_STEPS: '0' })).toContain('AGENT_MAX_STEPS')
     expect(parseError({ DATABASE_URL, AGENT_REASONING_EFFORT: 'low' })).toContain(
       'AGENT_REASONING_EFFORT',
+    )
+    expect(parseError({ DATABASE_URL, AGENT_STEP_POLICY: 'jev' })).toContain('AGENT_STEP_POLICY')
+  })
+
+  it('defaults to the rules step policy, selects llm when asked, and rejects decisions', () => {
+    expect(requireWorkerConfig(agentEnv()).agent?.stepPolicy).toBe('rules')
+    expect(requireWorkerConfig(agentEnv({ AGENT_STEP_POLICY: 'llm' })).agent?.stepPolicy).toBe(
+      'llm',
+    )
+    // The Decisions controller was removed (D059); a stale setting fails closed.
+    expect(parseError({ DATABASE_URL, AGENT_STEP_POLICY: 'decisions' })).toContain(
+      'AGENT_STEP_POLICY',
     )
   })
 })

@@ -192,7 +192,13 @@ application notes. Conversation history remains deferred.
    Stop cancels the draft. No browser preparation happens before Start (D046, D050).
 3. The `browser-task` job (pg-boss `singleton`, so later tasks wait in the queue) opens a
    `browser_task` run, claims the single active-task slot (partial unique index), checks the
-   per-site daily cap, connects over loopback CDP, and runs the `ToolLoopAgent` with
+   per-site daily cap, connects over loopback CDP, and (with `AGENT_STEP_POLICY=rules`, the
+   default since D058) first runs the model-free registry fast path through the same toolbox,
+   handing off one way on any ambiguity (D056). For Reddit comments, navigation first waits up
+   to 5 s for the hydrated top-level composer, so the first snapshot never holds Reddit's
+   placeholder (D058). `AGENT_STEP_POLICY=llm` skips the fast path. The opt-in OpenAI
+   Decisions controller (D057) was removed after failing its evaluation (D059).
+   It then runs the `ToolLoopAgent` with
    `prepareStep` trimming older snapshots and withholding approval until every field is filled.
    Every model attempt reserves budget through the budgeted model middleware against the global and
    agent daily limits plus the per-task cap (D044). The cap also counts the pinned intake run

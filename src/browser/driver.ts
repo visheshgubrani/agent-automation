@@ -43,6 +43,11 @@ export interface BrowserPage {
   readRedditPost(targetUrl: string): Promise<RedditPostContent>
   /** A field/control belongs to the requested post's top-level comment composer. */
   isRedditCommentComposer(ref: string, targetUrl: string): Promise<boolean>
+  /**
+   * Wait up to `timeoutMs` for a visible editor in the requested post's top-level composer
+   * (Reddit hydrates it after DOMContentLoaded). False on timeout or on another page.
+   */
+  waitForRedditCommentComposer(targetUrl: string, timeoutMs: number): Promise<boolean>
   click(ref: string): Promise<void>
   /** Replace the element's content with `value`. */
   fill(ref: string, value: string): Promise<void>

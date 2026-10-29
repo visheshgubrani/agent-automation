@@ -24,6 +24,7 @@ import {
   FakeBrowserPage,
   type FakePageModel,
   redditComposer,
+  redditHydratingThread,
   redditLongThread,
   redditThread,
   THREAD_URL,
@@ -178,6 +179,57 @@ describe('browser tool audit rows', () => {
     expect(
       h.page.actions.filter((a) => a.type === 'click' || a.type === 'goto' || a.type === 'fill'),
     ).toEqual([])
+  })
+
+  it('refuses a click on an element the page has since hidden and requires a fresh snapshot', async () => {
+    const h = await harness({ ...redditThread(), hiddenRefs: ['e8'] })
+    await h.toolbox.snapshot()
+    const refusal = await h.toolbox.click('1:e8').catch((error: unknown) => error)
+    expect(toolErrorText(refusal)).toMatch(/^refused: .*no longer visible/)
+    await expect(h.toolbox.click('1:e9')).rejects.toThrow(/old snapshot/)
+
+    h.page.model.hiddenRefs = []
+    await h.toolbox.snapshot()
+    await h.toolbox.click('2:e8')
+    expect(h.page.actions.filter((a) => a.type === 'click')).toEqual([{ type: 'click', ref: 'e8' }])
+  })
+
+  it('waits for the hydrated Reddit composer before the first snapshot and audits it', async () => {
+    const h = await harness(
+      { url: 'about:blank', snapshot: '- main [ref=e1]' },
+      { routes: { [THREAD_URL]: redditHydratingThread } },
+    )
+    const result = await h.toolbox.navigate(THREAD_URL)
+    expect(h.page.composerWaits).toBe(1)
+    expect(result.snapshot).toContain('[ref=1:e31]')
+    expect(result.snapshot).not.toContain('e30')
+
+    const [row] = await calls(h.runId)
+    expect(row?.result).toMatchObject({ generation: 1, composerReady: true })
+  })
+
+  it('still snapshots, with composerReady false, when the composer never hydrates', async () => {
+    const thread = () => ({ ...redditHydratingThread(), hydrate: undefined })
+    const h = await harness(
+      { url: 'about:blank', snapshot: '- main [ref=e1]' },
+      { routes: { [THREAD_URL]: thread } },
+    )
+    const result = await h.toolbox.navigate(THREAD_URL)
+    expect(result.snapshot).toContain('[ref=1:e30]')
+    const [row] = await calls(h.runId)
+    expect(row?.result).toMatchObject({ composerReady: false })
+  })
+
+  it('does not wait for a composer off the requested thread', async () => {
+    const other = 'https://www.reddit.com/r/test/comments/zzz999/other/'
+    const h = await harness(
+      { url: 'about:blank', snapshot: '- main [ref=e1]' },
+      { routes: { [other]: () => ({ url: other, snapshot: '- main [ref=e1]' }) } },
+    )
+    await h.toolbox.navigate(other)
+    expect(h.page.composerWaits).toBe(0)
+    const [row] = await calls(h.runId)
+    expect(row?.result).not.toHaveProperty('composerReady')
   })
 
   it('goes back when a click leaves the site', async () => {
